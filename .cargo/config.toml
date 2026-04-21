@@ -1,0 +1,10 @@
+# 缓解国内访问 crates.io 慢/超时：使用 rsproxy 稀疏索引。
+# 若你网络直连 crates.io 正常，可删除本文件或注释 [source.crates-io] 整段。
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+retry = 5

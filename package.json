@@ -1,0 +1,28 @@
+{
+  "name": "gbt-register-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "katex": "^0.16.11",
+    "naive-ui": "^2.40.3",
+    "vue": "^3.5.13",
+    "vue-i18n": "^9.14.5",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/cli": "2.10.1",
+    "@types/katex": "^0.16.7",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vue-tsc": "^2.1.10"
+  }
+}
