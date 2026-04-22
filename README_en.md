@@ -59,8 +59,6 @@ Agilebot Python SDK (GBT) | v2.0.1.0
 
 ## Limitations (read before production use)
 
-- **P (program points):** If the **ID** does not already exist under that **program name**, this app **cannot create** a new program point and can only **modify existing points**; **batch create** for **P** is subject to the same restriction.
-
 - **“Read all”:** There is no small fixed ID window. Scanning starts at **ID 1** in order; each failed read adds to a **consecutive failure** count (a successful read resets it). After **10 consecutive failures**, scanning stops and only earlier successful reads are kept. If register IDs are **not contiguous** and there are large gaps, the result may stop before the real maximum ID—use a **custom range** instead. To avoid overly long scans, the implementation also stops at an **ID ceiling of 100000**.
 
 ## Changelog
