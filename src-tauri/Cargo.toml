@@ -1,6 +1,6 @@
 [package]
 name = "gbt-register-manager"
-version = "0.1.0"
+version = "1.0.0"
 description = "GBT Register Manager"
 authors = ["user"]
 edition = "2021"
@@ -15,5 +15,13 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2.10", features = [] }
+tauri = { version = "2.10", features = ["devtools"] }
 tauri-plugin-dialog = "2"
+
+[profile.release]
+# 缩小安装包体积并启用 LTO，代价是编译时间。
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -15,10 +15,11 @@ export default {
     bodyImport:
       "检测到 {count} 个寄存器在机器人上已存在（与当前表格 ID 重叠）。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次导入，不写入任何数据。",
     bodyCreate:
-      "检测到 {count} 个已存在寄存器（ID {start}~{end}）。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次批量新建，不写入任何数据。"
+      "检测到以下寄存器已存在：{ids}。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次批量新建，不写入任何数据。"
   },
   messages: {
     enterIp: "请先输入机器人 IP。",
+    invalidIp: "请输入合法的 IPv4 地址（如 192.168.1.100）。",
     connectSuccess: "机器人连接成功。",
     connectDebug: "已进入调试模式（未连接真实机器人）。",
     connectFailed: "连接失败。",
@@ -38,7 +39,9 @@ export default {
   excel: {
     empty: "Excel 内容为空。",
     headerMismatch: "表头不匹配。期望：{expected}；实际：{actual}",
-    readFailed: "读取文件失败。"
+    readFailed: "读取文件失败。",
+    tooLarge: "文件过大（超过 {limitMb} MB），请分拆后再导入。",
+    tooManyRows: "数据行过多（{actual} 行，上限 {limit} 行）。"
   },
   connect: {
     title: "连接机器人",
@@ -55,18 +58,21 @@ export default {
   },
   create: {
     cardTitle: "快速批量新建寄存器",
-    start: "开始批量新建"
+    start: "开始批量新建",
+    running: "新建中"
   },
   export: {
     title: "数据导出",
     readPreview: "从机器人读取并预览",
+    reading: "读取中",
     toExcel: "导出到 Excel"
   },
   import: {
     title: "数据导入",
     pickExcel: "导入 Excel 并预览",
     downloadTemplate: "下载当前类型模板",
-    applyRobot: "导入到机器人"
+    applyRobot: "导入到机器人",
+    applying: "导入中"
   },
   form: {
     regType: "寄存器类型",

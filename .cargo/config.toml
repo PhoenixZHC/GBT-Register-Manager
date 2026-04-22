@@ -8,3 +8,10 @@ registry = "sparse+https://rsproxy.cn/index/"
 
 [net]
 retry = 5
+
+# 静态链接 MSVC C++ 运行时（msvcp140.dll / vcruntime140.dll）。
+# 效果：安装包不再依赖客户电脑上的 Visual C++ Redistributable，
+#       彻底消除"缺少 DLL"导致白屏或闪退的问题。
+# 代价：可执行文件体积增大约 200-400 KB，可忽略不计。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

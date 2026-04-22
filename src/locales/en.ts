@@ -15,10 +15,11 @@ export default {
     bodyImport:
       "{count} register(s) already exist on the robot (ID overlap with the table). Choose: Overwrite replaces existing values; Skip keeps values on the robot; Stop cancels the import without writing any data.",
     bodyCreate:
-      "{count} register(s) already exist in ID range {start}~{end}. Choose: Overwrite replaces existing values; Skip keeps values on the robot; Stop cancels batch creation without writing any data."
+      "Detected existing registers: {ids}. Choose: Overwrite replaces existing values; Skip keeps current robot values; Stop cancels batch creation without writing data."
   },
   messages: {
     enterIp: "Please enter the robot IP address.",
+    invalidIp: "Please enter a valid IPv4 address (e.g. 192.168.1.100).",
     connectSuccess: "Connected to the robot successfully.",
     connectDebug: "Debug mode (no real robot connection).",
     connectFailed: "Connection failed.",
@@ -38,7 +39,9 @@ export default {
   excel: {
     empty: "The Excel file is empty.",
     headerMismatch: "Header mismatch. Expected: {expected}; actual: {actual}",
-    readFailed: "Failed to read the file."
+    readFailed: "Failed to read the file.",
+    tooLarge: "File too large (over {limitMb} MB). Please split it first.",
+    tooManyRows: "Too many data rows ({actual}, limit {limit})."
   },
   connect: {
     title: "Connect to robot",
@@ -55,18 +58,21 @@ export default {
   },
   create: {
     cardTitle: "Batch create registers",
-    start: "Start batch create"
+    start: "Start batch create",
+    running: "Creating..."
   },
   export: {
     title: "Data export",
     readPreview: "Read from robot and preview",
+    reading: "Reading...",
     toExcel: "Export to Excel"
   },
   import: {
     title: "Data import",
     pickExcel: "Import Excel and preview",
     downloadTemplate: "Download template for current type",
-    applyRobot: "Import to robot"
+    applyRobot: "Import to robot",
+    applying: "Importing..."
   },
   form: {
     regType: "Register type",

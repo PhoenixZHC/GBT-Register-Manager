@@ -15,10 +15,11 @@ export default {
     bodyImport:
       "ロボット上に既に存在するレジスタが {count} 件検出されました（表の ID と重複）。選択：上書きは既存を置き換えます。スキップはロボット側の値を保持します。中止はインポートを行わずキャンセルします。",
     bodyCreate:
-      "既存レジスタが {count} 件検出されました（ID {start}～{end}）。選択：上書きは既存を置き換えます。スキップはロボット側の値を保持します。中止は一括作成を行わずキャンセルします。"
+      "既存レジスタが検出されました：{ids}。選択：上書きは既存を置き換えます。スキップはロボット側の値を保持します。中止は一括作成を行わずキャンセルします。"
   },
   messages: {
     enterIp: "ロボットの IP アドレスを入力してください。",
+    invalidIp: "有効な IPv4 アドレスを入力してください（例：192.168.1.100）。",
     connectSuccess: "ロボットに接続しました。",
     connectDebug: "デバッグモードです（実機は接続されていません）。",
     connectFailed: "接続に失敗しました。",
@@ -38,7 +39,9 @@ export default {
   excel: {
     empty: "Excel が空です。",
     headerMismatch: "ヘッダーが一致しません。期待：{expected}；実際：{actual}",
-    readFailed: "ファイルの読み取りに失敗しました。"
+    readFailed: "ファイルの読み取りに失敗しました。",
+    tooLarge: "ファイルが大きすぎます（{limitMb} MB 超）。分割してください。",
+    tooManyRows: "行数が多すぎます（{actual} 行、上限 {limit} 行）。"
   },
   connect: {
     title: "ロボットに接続",
@@ -55,18 +58,21 @@ export default {
   },
   create: {
     cardTitle: "レジスタの一括作成",
-    start: "一括作成を開始"
+    start: "一括作成を開始",
+    running: "作成中..."
   },
   export: {
     title: "データエクスポート",
     readPreview: "ロボットから読み取り・プレビュー",
+    reading: "読み取り中...",
     toExcel: "Excel にエクスポート"
   },
   import: {
     title: "データインポート",
     pickExcel: "Excel をインポートしてプレビュー",
     downloadTemplate: "現在の型のテンプレートを取得",
-    applyRobot: "ロボットへインポート"
+    applyRobot: "ロボットへインポート",
+    applying: "インポート中..."
   },
   form: {
     regType: "レジスタ種別",

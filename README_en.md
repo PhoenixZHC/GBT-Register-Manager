@@ -10,6 +10,8 @@
 
 This application batch-operates **GBT (Agilebot)** robot **R**, **PR**, and **P** registers: read from the controller and export to Excel, import from Excel back to the robot, and batch-create registers.
 
+Current app version: `v1.0.0`
+
 ## Compatible SDK
 
 
@@ -63,7 +65,7 @@ Agilebot Python SDK (GBT) | v2.0.1.0
 
 ## Changelog
 
-### V0.1.0 (2026-04-22)
+### V1.0.0 (2026-04-22)
 
 - First release: IP connect, robot model and controller version display, **R / P / PR** read/write, batch create, Excel import/export and blank templates, write conflict handling (overwrite / skip / cancel), multi-language UI.
 

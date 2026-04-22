@@ -15,10 +15,11 @@ export default {
     bodyImport:
       "로봇에 이미 존재하는 레지스터 {count}개가 감지되었습니다(표 ID와 겹침). 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 가져오기를 취소하고 기록하지 않습니다.",
     bodyCreate:
-      "이미 존재하는 레지스터 {count}개가 감지되었습니다(ID {start}~{end}). 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 일괄 생성을 취소하고 기록하지 않습니다."
+      "이미 존재하는 레지스터가 감지되었습니다: {ids}. 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 일괄 생성을 취소하고 기록하지 않습니다."
   },
   messages: {
     enterIp: "로봇 IP 주소를 입력하세요.",
+    invalidIp: "올바른 IPv4 주소를 입력하세요 (예: 192.168.1.100).",
     connectSuccess: "로봇에 연결되었습니다.",
     connectDebug: "디버그 모드입니다(실제 로봇 미연결).",
     connectFailed: "연결에 실패했습니다.",
@@ -38,7 +39,9 @@ export default {
   excel: {
     empty: "Excel 내용이 비어 있습니다.",
     headerMismatch: "헤더가 일치하지 않습니다. 예상: {expected}; 실제: {actual}",
-    readFailed: "파일을 읽지 못했습니다."
+    readFailed: "파일을 읽지 못했습니다.",
+    tooLarge: "파일이 너무 큽니다({limitMb} MB 초과). 먼저 분할하세요.",
+    tooManyRows: "행이 너무 많습니다({actual}행, 최대 {limit}행)."
   },
   connect: {
     title: "로봇 연결",
@@ -55,18 +58,21 @@ export default {
   },
   create: {
     cardTitle: "레지스터 빠른 일괄 생성",
-    start: "일괄 생성 시작"
+    start: "일괄 생성 시작",
+    running: "생성 중..."
   },
   export: {
     title: "데이터보내기",
     readPreview: "로봇에서 읽고 미리보기",
+    reading: "읽는 중...",
     toExcel: "Excel로보내기"
   },
   import: {
     title: "데이터 가져오기",
     pickExcel: "Excel 가져오기 및 미리보기",
     downloadTemplate: "현재 유형 템플릿 다운로드",
-    applyRobot: "로봇으로 가져오기"
+    applyRobot: "로봇으로 가져오기",
+    applying: "가져오는 중..."
   },
   form: {
     regType: "레지스터 유형",

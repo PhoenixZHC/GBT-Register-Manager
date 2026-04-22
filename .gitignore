@@ -57,3 +57,12 @@ src/**/*.js.map
 
 # 若 SDK 体积过大或含超大二进制，可改为 Git LFS 或取消下行注释改为本地自备
 # Python_v2.0.1.0/
+
+# PyInstaller 中间产物（构建脚本最终会把产物拷到 src-tauri/binaries/ 下）
+python-sidecar/build/
+python-sidecar/dist/
+python-sidecar/*.spec.bak
+
+# Tauri externalBin 产物（由 build_sidecar.ps1 生成，不入仓）
+src-tauri/binaries/*.exe
+src-tauri/binaries/gbt-bridge-*

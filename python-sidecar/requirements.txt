@@ -1,1 +1,11 @@
+# 运行时依赖（开发期 + PyInstaller 冻结均使用这份列表）
 openpyxl>=3.1.0
+
+# Agilebot Python SDK（v2.0.1.0）
+# 如果路径变化请同步修改此处；`pip install -r` 会直接安装该 wheel。
+../Python_v2.0.1.0/Agilebot.Robot.SDK.A-2.0.1.0+0998ac28.20260130-py3-none-any.whl
+
+# Agilebot SDK 的运行时依赖（节选自 Python_v2.0.1.0/requirements.txt）
+requests>=2.28.0,<3
+aenum>=3.1.0
+websockets>=11.0,<13

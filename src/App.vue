@@ -40,7 +40,30 @@ type FeatureKey = "batchCreate" | "dataImport" | "dataExport";
 /** 调试入口：输入该 IP 并点连接，跳过真实机器人连接，仅用于界面与流程验证 */
 const DEBUG_BYPASS_IP = "255.255.255.255";
 
-const { t, locale } = useI18n();
+/** 简单 IPv4 校验：四段 0-255，允许 DEBUG_BYPASS_IP */
+function isValidIPv4(ip: string): boolean {
+  if (ip === DEBUG_BYPASS_IP) return true;
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => {
+    if (!/^\d{1,3}$/.test(p)) return false;
+    const n = Number(p);
+    return n >= 0 && n <= 255;
+  });
+}
+
+/** 统一异常→message 兜底，避免 try/finally 中未捕获导致静默失败。 */
+function errMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+const { t, te, locale } = useI18n();
 
 const message = useMessage();
 const dialog = useDialog();
@@ -69,7 +92,14 @@ function promptRegisterConflict(content: string): Promise<RegisterConflictChoice
           NSpace,
           { justify: "end", wrap: true, size: 12 },
           () => [
-            h(NButton, { tertiary: true, onClick: () => finish("stop") }, { default: () => t("conflict.stop") }),
+            h(
+              NButton,
+              {
+                onClick: () => finish("stop"),
+                style: "background:#fff;color:#1f2329;border:1px solid #d9d9d9;"
+              },
+              { default: () => t("conflict.stop") }
+            ),
             h(NButton, { onClick: () => finish("skip") }, { default: () => t("conflict.skipExisting") }),
             h(NButton, { type: "primary", onClick: () => finish("overwrite") }, { default: () => t("conflict.overwriteExisting") })
           ]
@@ -86,7 +116,8 @@ const connection = ref<ConnectionState>({ connected: false, ip: "", message: "" 
 const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
 const robotVersion = ref("");
-const appVersion = ref("");
+const DEFAULT_APP_VERSION = "1.0.0";
+const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
   { label: "中文", key: "zh" },
@@ -99,6 +130,52 @@ const langMenuOptions = [
 const currentLangLabel = computed(() => {
   const m: Record<AppLocale, string> = { zh: "ZH", en: "EN", ja: "JA", ko: "KO", ru: "RU" };
   return m[locale.value as AppLocale] ?? "ZH";
+});
+
+const createButtonText = computed(() => {
+  if (!createLoading.value) return t("create.start");
+  // 先检查 key 是否存在，避免触发 intlify 缺键告警。
+  if (!te("create.running")) {
+    const fallbackByLocale: Record<AppLocale, string> = {
+      zh: "新建中",
+      en: "Creating...",
+      ja: "作成中...",
+      ko: "생성 중...",
+      ru: "Создание..."
+    };
+    return fallbackByLocale[locale.value as AppLocale] ?? "Creating...";
+  }
+  return t("create.running");
+});
+
+const exportReadButtonText = computed(() => {
+  if (!ioReadLoading.value) return t("export.readPreview");
+  if (!te("export.reading")) {
+    const fallbackByLocale: Record<AppLocale, string> = {
+      zh: "读取中",
+      en: "Reading...",
+      ja: "読み取り中...",
+      ko: "읽는 중...",
+      ru: "Чтение..."
+    };
+    return fallbackByLocale[locale.value as AppLocale] ?? "Reading...";
+  }
+  return t("export.reading");
+});
+
+const importApplyButtonText = computed(() => {
+  if (!ioApplyLoading.value) return t("import.applyRobot");
+  if (!te("import.applying")) {
+    const fallbackByLocale: Record<AppLocale, string> = {
+      zh: "导入中",
+      en: "Importing...",
+      ja: "インポート中...",
+      ko: "가져오는 중...",
+      ru: "Импорт..."
+    };
+    return fallbackByLocale[locale.value as AppLocale] ?? "Importing...";
+  }
+  return t("import.applying");
 });
 
 function onLangSelect(key: string) {
@@ -121,7 +198,8 @@ function applyChromeLocale() {
   }
   const title = t("app.title");
   try {
-    void getCurrentWindow().setTitle(title);
+    // 权限不足时 setTitle 会 reject，显式捕获避免控制台出现未处理 Promise 错误。
+    void getCurrentWindow().setTitle(title).catch(() => {});
   } catch {
     /* 非 Tauri（如仅 vite 浏览器）无此 API */
   }
@@ -144,6 +222,8 @@ const ioEndId = ref(10);
 const ioProgramName = ref("");
 const ioRows = ref<Record<string, unknown>[]>([]);
 const ioDetails = ref<string[]>([]);
+const ioReadLoading = ref(false);
+const ioApplyLoading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
 // 批量新建页
@@ -152,6 +232,7 @@ const createProgramName = ref("");
 const createStartId = ref(1);
 const createCount = ref(10);
 const createDetails = ref<string[]>([]);
+const createLoading = ref(false);
 
 const recentOptions = computed(() => recentIps.value.map((v) => ({ label: v, value: v })));
 const isConnected = computed(() => connection.value.connected);
@@ -207,6 +288,10 @@ async function onConnect() {
     message.warning(t("messages.enterIp"));
     return;
   }
+  if (!isValidIPv4(trimmed)) {
+    message.warning(t("messages.invalidIp"));
+    return;
+  }
   loading.value = true;
   try {
     connection.value = await connectRobot(trimmed);
@@ -227,6 +312,8 @@ async function onConnect() {
     } else {
       message.error(connection.value.message || t("messages.connectFailed"));
     }
+  } catch (e) {
+    message.error(errMessage(e) || t("messages.connectFailed"));
   } finally {
     loading.value = false;
   }
@@ -240,6 +327,8 @@ async function onDisconnect() {
     robotModel.value = "";
     robotVersion.value = "";
     await refreshConnection();
+  } catch (e) {
+    message.error(errMessage(e));
   } finally {
     loading.value = false;
   }
@@ -252,6 +341,7 @@ function openImportDialog() {
 async function onReadPreviewIO() {
   if (!isConnected.value) return message.warning(t("messages.needConnect"));
   if (needProgramForIO.value && !ioProgramName.value.trim()) return message.warning(t("messages.pReadNeedProgram"));
+  ioReadLoading.value = true;
   loading.value = true;
   try {
     ioRows.value = await readRegisters({
@@ -261,7 +351,10 @@ async function onReadPreviewIO() {
     });
     ioDetails.value = [];
     message.success(t("messages.readDone", { count: ioRows.value.length }));
+  } catch (e) {
+    message.error(errMessage(e));
   } finally {
+    ioReadLoading.value = false;
     loading.value = false;
   }
 }
@@ -316,6 +409,7 @@ async function onApplyIO() {
   if (needProgramForIO.value && !ioProgramName.value.trim()) return message.warning(t("messages.pWriteNeedProgram"));
   const rowIds = collectImportRowIds(ioRows.value);
   if (!rowIds.length) return message.warning(t("messages.noValidRegIds"));
+  ioApplyLoading.value = true;
   loading.value = true;
   try {
     const start = Math.min(...rowIds);
@@ -354,7 +448,10 @@ async function onApplyIO() {
       ioDetails.value = res.details || [];
       message.error(res.message);
     }
+  } catch (e) {
+    message.error(errMessage(e));
   } finally {
+    ioApplyLoading.value = false;
     loading.value = false;
   }
 }
@@ -409,12 +506,31 @@ function buildCreateRows(start: number, count: number): Record<string, unknown>[
   return rows;
 }
 
+function formatIdsForConflict(ids: number[]): string {
+  if (!ids.length) return "";
+  const sorted = [...new Set(ids)].sort((a, b) => a - b);
+  return sorted.map((id) => `ID${id}`).join("、");
+}
+
+function createConflictContent(count: number, start: number, end: number, idsText: string): string {
+  // 批量新建冲突文案固定由代码生成，避免旧语言包缓存回退到范围文案。
+  const fallbackByLocale: Record<AppLocale, string> = {
+    zh: `检测到以下寄存器已存在：${idsText}。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次批量新建，不写入任何数据。`,
+    en: `Detected existing registers: ${idsText}. Choose: Overwrite replaces existing values; Skip keeps current robot values; Stop cancels batch creation without writing data.`,
+    ja: `既存レジスタが検出されました：${idsText}。選択：上書きは既存を置き換えます。スキップはロボット側の値を保持します。中止は一括作成を行わずキャンセルします。`,
+    ko: `이미 존재하는 레지스터가 감지되었습니다: ${idsText}. 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 일괄 생성을 취소하고 기록하지 않습니다.`,
+    ru: `Обнаружены существующие регистры: ${idsText}. Выберите: перезапись заменит существующие значения; пропуск сохранит значения на роботе; остановка отменит пакетное создание без записи данных.`
+  };
+  return fallbackByLocale[locale.value as AppLocale] ?? fallbackByLocale.en;
+}
+
 async function onCreateRegisters() {
   if (!isConnected.value) return message.warning(t("messages.needConnect"));
   const start = Math.max(0, Number(createStartId.value || 0));
   const count = Math.max(1, Number(createCount.value || 0));
   if (count <= 0) return message.warning(t("messages.countPositive"));
   if (needProgramForCreate.value && !createProgramName.value.trim()) return message.warning(t("messages.pCreateNeedProgram"));
+  createLoading.value = true;
   loading.value = true;
   try {
     const end = start + count - 1;
@@ -425,9 +541,15 @@ async function onCreateRegisters() {
     });
     let conflictPolicy: ConflictPolicy = "skip";
     if (existing.length > 0) {
-      const choice = await promptRegisterConflict(
-        t("conflict.bodyCreate", { count: existing.length, start, end })
-      );
+      const existingIds = existing
+        .map((row) => Number(row["ID"]))
+        .filter((id) => !Number.isNaN(id));
+      const idsText = formatIdsForConflict(existingIds);
+      if (!idsText) {
+        message.error(t("messages.noValidRegIds"));
+        return;
+      }
+      const choice = await promptRegisterConflict(createConflictContent(existing.length, start, end, idsText));
       if (choice === "stop") {
         message.info(t("messages.createCancelled"));
         return;
@@ -448,7 +570,10 @@ async function onCreateRegisters() {
       createDetails.value = res.details || [];
       message.error(res.message);
     }
+  } catch (e) {
+    message.error(errMessage(e));
   } finally {
+    createLoading.value = false;
     loading.value = false;
   }
 }
@@ -457,7 +582,7 @@ onMounted(async () => {
   try {
     appVersion.value = await getAppVersion();
   } catch {
-    appVersion.value = "";
+    appVersion.value = DEFAULT_APP_VERSION;
   }
   await refreshConnection();
   recentIps.value = JSON.parse(localStorage.getItem("gbt_recent_ips") || "[]");
@@ -545,7 +670,9 @@ onMounted(async () => {
                 </n-form-item>
               </n-form>
               <div class="toolbar-row">
-                <n-button type="primary" :disabled="loading" @click="onCreateRegisters">{{ t("create.start") }}</n-button>
+                <n-button type="primary" :disabled="loading" :loading="createLoading" @click="onCreateRegisters">
+                  {{ createButtonText }}
+                </n-button>
               </div>
               <n-alert v-if="createDetails.length" type="warning" class="alert-block" :title="t('alert.failTop20')">
                 <div v-for="(d, i) in createDetails.slice(0, 20)" :key="`${d}-${i}`">{{ d }}</div>
@@ -583,7 +710,9 @@ onMounted(async () => {
                   </n-form-item>
                 </n-form>
                 <div class="toolbar-row">
-                  <n-button type="primary" :disabled="loading" @click="onReadPreviewIO">{{ t("export.readPreview") }}</n-button>
+                  <n-button type="primary" :disabled="loading" :loading="ioReadLoading" @click="onReadPreviewIO">
+                    {{ exportReadButtonText }}
+                  </n-button>
                 </div>
               </n-card>
               <n-card class="card-apple section-light card-apple--io-preview" :bordered="false" size="medium">
@@ -626,7 +755,9 @@ onMounted(async () => {
               <n-card class="card-apple section-light card-apple--io-preview" :bordered="false" size="medium">
                 <div class="preview-toolbar preview-toolbar--actions-only preview-toolbar--io-tight">
                   <div class="preview-toolbar__right">
-                    <n-button type="primary" :disabled="!ioRows.length || loading" @click="onApplyIO">{{ t("import.applyRobot") }}</n-button>
+                    <n-button type="primary" :disabled="!ioRows.length || loading" :loading="ioApplyLoading" @click="onApplyIO">
+                      {{ importApplyButtonText }}
+                    </n-button>
                   </div>
                 </div>
                 <div class="table-wrap">

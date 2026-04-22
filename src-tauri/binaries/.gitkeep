@@ -1,0 +1,5 @@
+此目录存放 Tauri externalBin 打包前的 sidecar 产物：
+    gbt-bridge-x86_64-pc-windows-msvc.exe
+
+构建方式：
+    powershell -ExecutionPolicy Bypass -File ../../python-sidecar/build_sidecar.ps1

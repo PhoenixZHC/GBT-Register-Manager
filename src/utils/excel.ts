@@ -12,6 +12,10 @@ export class ExcelUserError extends Error {
   }
 }
 
+/** 导入时的保护阈值，避免用户误选超大表格导致渲染进程 OOM / 白屏。 */
+export const IMPORT_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MiB
+export const IMPORT_MAX_ROWS = 50_000;
+
 const headers = {
   R: ["type", "ID", "value"],
   P: ["Type", "ID", "X", "Y", "Z", "A", "B", "C", "TF", "UF", "Coord"],
@@ -44,6 +48,15 @@ function headersMatchExcel(header: string[], registerType: RegisterType): boolea
 
 export function parseExcelForPreview(file: File, registerType: RegisterType): Promise<Record<string, unknown>[]> {
   return new Promise((resolve, reject) => {
+    if (file.size > IMPORT_MAX_FILE_BYTES) {
+      reject(
+        new ExcelUserError("excel.tooLarge", {
+          limitMb: String(Math.round(IMPORT_MAX_FILE_BYTES / 1024 / 1024))
+        })
+      );
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       try {
@@ -68,17 +81,28 @@ export function parseExcelForPreview(file: File, registerType: RegisterType): Pr
           return;
         }
 
-        const rows = matrix
+        const dataRows = matrix
           .slice(1)
-          .filter((row) => row.some((col) => String(col ?? "").trim() !== ""))
-          .map((row) => {
-            const normalized: Record<string, unknown> = {};
-            expected.forEach((key, idx) => {
-              const value = row[idx];
-              normalized[key] = typeof value === "number" ? Number(value.toFixed(3)) : value;
-            });
-            return normalized;
+          .filter((row) => row.some((col) => String(col ?? "").trim() !== ""));
+
+        if (dataRows.length > IMPORT_MAX_ROWS) {
+          reject(
+            new ExcelUserError("excel.tooManyRows", {
+              limit: String(IMPORT_MAX_ROWS),
+              actual: String(dataRows.length)
+            })
+          );
+          return;
+        }
+
+        const rows = dataRows.map((row) => {
+          const normalized: Record<string, unknown> = {};
+          expected.forEach((key, idx) => {
+            const value = row[idx];
+            normalized[key] = typeof value === "number" ? Number(value.toFixed(3)) : value;
           });
+          return normalized;
+        });
 
         resolve(rows);
       } catch (err) {
