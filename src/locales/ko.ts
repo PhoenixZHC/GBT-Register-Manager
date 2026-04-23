@@ -13,20 +13,21 @@ export default {
     skipExisting: "기존 건너뛰기",
     overwriteExisting: "기존 덮어쓰기",
     bodyImport:
-      "로봇에 이미 존재하는 레지스터 {count}개가 감지되었습니다(표 ID와 겹침). 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 가져오기를 취소하고 기록하지 않습니다.",
+      "로봇에 이미 존재하는 레지스터 {total}개가 감지되었습니다(표 ID와 겹침). 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 가져오기를 취소하고 기록하지 않습니다.",
     bodyCreate:
       "이미 존재하는 레지스터가 감지되었습니다: {ids}. 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 일괄 생성을 취소하고 기록하지 않습니다."
   },
   messages: {
-    enterIp: "로봇 IP 주소를 입력하세요.",
+    enterIp: "컨트롤러 IP 주소를 입력하세요.",
     invalidIp: "올바른 IPv4 주소를 입력하세요 (예: 192.168.1.100).",
+    invalidTeachPanelIp: "티치 펜던트 IP 형식이 올바르지 않습니다. 올바른 IPv4를 입력하거나 비워 두세요.",
     connectSuccess: "로봇에 연결되었습니다.",
     connectDebug: "디버그 모드입니다(실제 로봇 미연결).",
     connectFailed: "연결에 실패했습니다.",
     needConnect: "먼저 로봇에 연결하세요.",
     pReadNeedProgram: "P 레지스터 읽기에는 프로그램 이름이 필요합니다.",
-    readDone: "읽기 완료: {count}건.",
-    excelPreview: "파일을 불러와 미리보기: {count}행.",
+    readDone: "읽기 완료: {total}건.",
+    excelPreview: "파일을 불러와 미리보기: {total}행.",
     noExportData: "보낼 미리보기 데이터가 없습니다.",
     needPreviewData: "먼저 미리보기 데이터를 준비하세요.",
     pWriteNeedProgram: "P 레지스터 쓰기 전에 프로그램 이름이 필요합니다.",
@@ -46,6 +47,8 @@ export default {
   connect: {
     title: "로봇 연결",
     ipPlaceholder: "IP, 예: 10.27.1.254",
+    controllerIpPlaceholder: "컨트롤러 IP, 예: 10.27.1.254",
+    teachPanelIpPlaceholder: "티치 펜던트 IP(선택, 없으면 비워 두세요)",
     recentPlaceholder: "최근 사용 IP",
     connect: "연결",
     disconnect: "연결 끊기"

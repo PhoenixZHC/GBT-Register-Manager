@@ -5,8 +5,20 @@ export type ConflictPolicy = "overwrite" | "skip";
 
 export interface ConnectionState {
   connected: boolean;
+  /** 控制柜 IP（显示用）。 */
   ip: string;
+  /** 示教器 IP（可选）。无示教器时为空。 */
+  teachPanelIp?: string;
+  /** 是否在本机启动代理服务（四轴无 TP 时应为 true）。 */
+  localProxy?: boolean;
   message: string;
+}
+
+/** 连接请求参数，对应 Tauri 的 `connect_robot` 命令。 */
+export interface ConnectRequest {
+  controllerIp: string;
+  teachPanelIp?: string;
+  localProxy: boolean;
 }
 
 export interface RangeSelector {

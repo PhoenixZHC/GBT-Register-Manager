@@ -13,20 +13,21 @@ export default {
     skipExisting: "跳过已存在",
     overwriteExisting: "覆盖已存在",
     bodyImport:
-      "检测到 {count} 个寄存器在机器人上已存在（与当前表格 ID 重叠）。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次导入，不写入任何数据。",
+      "检测到 {total} 个寄存器在机器人上已存在（与当前表格 ID 重叠）。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次导入，不写入任何数据。",
     bodyCreate:
       "检测到以下寄存器已存在：{ids}。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次批量新建，不写入任何数据。"
   },
   messages: {
-    enterIp: "请先输入机器人 IP。",
+    enterIp: "请先输入控制柜 IP。",
     invalidIp: "请输入合法的 IPv4 地址（如 192.168.1.100）。",
+    invalidTeachPanelIp: "示教器 IP 格式不合法，请输入合法 IPv4 或留空。",
     connectSuccess: "机器人连接成功。",
     connectDebug: "已进入调试模式（未连接真实机器人）。",
     connectFailed: "连接失败。",
     needConnect: "请先连接机器人。",
     pReadNeedProgram: "P 点读取必须填写程序名。",
-    readDone: "读取完成，共 {count} 条。",
-    excelPreview: "文档已加载并预览，共 {count} 行。",
+    readDone: "读取完成，共 {total} 条。",
+    excelPreview: "文档已加载并预览，共 {total} 行。",
     noExportData: "没有可导出的预览数据。",
     needPreviewData: "请先准备预览数据。",
     pWriteNeedProgram: "写入 P 点前必须填写程序名。",
@@ -46,6 +47,8 @@ export default {
   connect: {
     title: "连接机器人",
     ipPlaceholder: "IP，例如 10.27.1.254",
+    controllerIpPlaceholder: "控制柜 IP，例如 10.27.1.254",
+    teachPanelIpPlaceholder: "示教器 IP（可选，无示教器可留空）",
     recentPlaceholder: "最近使用 IP",
     connect: "连接",
     disconnect: "断开连接"

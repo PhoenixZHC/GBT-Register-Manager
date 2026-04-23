@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import socket
 import sys
 import traceback
 from contextlib import contextmanager
@@ -88,11 +89,19 @@ def log_py(msg: str) -> None:
 # ---------- Agilebot SDK 延迟加载 -------------------------------------------
 
 try:
-    from Agilebot import Arm, PoseRegister, PoseType, ProgramPose, StatusCodeEnum
+    from Agilebot import (
+        Arm,
+        PoseRegister,
+        PoseType,
+        Posture,
+        ProgramPose,
+        StatusCodeEnum,
+    )
 except Exception as _sdk_err:  # pragma: no cover
     Arm = None  # type: ignore[assignment]
     PoseRegister = None  # type: ignore[assignment]
     PoseType = None  # type: ignore[assignment]
+    Posture = None  # type: ignore[assignment]
     ProgramPose = None  # type: ignore[assignment]
     StatusCodeEnum = None  # type: ignore[assignment]
     _SDK_IMPORT_ERR: Exception | None = _sdk_err
@@ -189,20 +198,51 @@ def _coord_from_pose(pose: Any) -> str:
     return "L" if n < 0 else "R"
 
 
-def _apply_coord_to_pose(pose: Any, coord: str) -> None:
-    try:
-        lr = pose.poseData.cartData.baseCart.posture.arm_left_right
-    except Exception:
-        return
+def _coord_to_left_right(coord: str) -> int:
+    """Excel 里 L/R 映射到 SDK `arm_left_right`：L → -1，R/其他 → 1。"""
     c = str(coord or "").strip().upper()
-    value = -1 if c == "L" else 1
+    return -1 if c == "L" else 1
+
+
+def _new_posture(coord: str) -> Any:
+    """按 SDK PR/P 示例构造 Posture：显式 new 一个实例并写入需要的字段。
+
+    避免对未初始化 posture 做属性链赋值造成的 "静默丢失"。
+    对 SDK 未显式给默认值的 `arm_back_front` 一并补成 1（示例取值），
+    保证机器人侧拿到可用的完整姿态。
+    """
+    if Posture is None:
+        return None
+    posture = Posture()
     try:
-        pose.poseData.cartData.baseCart.posture.arm_left_right = value
+        posture.arm_left_right = _coord_to_left_right(coord)
     except Exception:
-        try:
-            pose.poseData.cartData.baseCart.posture.arm_left_right = "L" if value < 0 else "R"
-        except Exception:
-            pose.poseData.cartData.baseCart.posture.arm_left_right = lr
+        pass
+    try:
+        # 与 PR.py 示例保持一致；若 SDK 对该字段有其它取值也不会抛异常。
+        posture.arm_back_front = 1
+    except Exception:
+        pass
+    return posture
+
+
+def _apply_coord_to_pose(pose: Any, coord: str) -> None:
+    """把 Excel 里的 coord (L/R) 写到 P 点的 `baseCart.posture.arm_left_right`。
+
+    如果 `posture` 字段本身为空/不可写，则 new 一个 Posture 挂上去，
+    避免静默丢失（见 SDK program_pose.py 和 PR.py 示例）。
+    """
+    value = _coord_to_left_right(coord)
+    cart_data = pose.poseData.cartData.baseCart
+    try:
+        cart_data.posture.arm_left_right = value
+        return
+    except Exception:
+        pass
+    try:
+        cart_data.posture = _new_posture(coord)
+    except Exception:
+        log_py("_apply_coord_to_pose 无法设置 posture，保留 SDK 默认值")
 
 
 def _coord_from_pose_register(pose_register: Any) -> str:
@@ -221,19 +261,22 @@ def _coord_from_pose_register(pose_register: Any) -> str:
 
 
 def _apply_coord_to_pose_register(pose_register: Any, coord: str) -> None:
+    """把 Excel 里的 coord (L/R) 写到 PR 寄存器 `cartData.posture.arm_left_right`。
+
+    PR.py 示例明确要求：新建 PoseRegister 后需 new 一个 Posture 再挂到
+    `poseRegisterData.cartData.posture`，否则属性链写入会静默丢失。
+    """
+    value = _coord_to_left_right(coord)
+    cart_data = pose_register.poseRegisterData.cartData
     try:
-        old_lr = pose_register.poseRegisterData.cartData.posture.arm_left_right
-    except Exception:
+        cart_data.posture.arm_left_right = value
         return
-    c = str(coord or "").strip().upper()
-    value = -1 if c == "L" else 1
-    try:
-        pose_register.poseRegisterData.cartData.posture.arm_left_right = value
     except Exception:
-        try:
-            pose_register.poseRegisterData.cartData.posture.arm_left_right = "L" if value < 0 else "R"
-        except Exception:
-            pose_register.poseRegisterData.cartData.posture.arm_left_right = old_lr
+        pass
+    try:
+        cart_data.posture = _new_posture(coord)
+    except Exception:
+        log_py("_apply_coord_to_pose_register 无法设置 posture，保留 SDK 默认值")
 
 
 def make_headers(register_type: str) -> List[str]:
@@ -245,6 +288,9 @@ def make_headers(register_type: str) -> List[str]:
         return ["TYPE", "ID", "X", "Y", "Z", "A", "B", "C", "coord"]
     raise ValueError("不支持的寄存器类型")
 
+
+# P 寄存器（程序位姿）服务的 HTTP 端口，与 R/PR 所用端口不同。
+P_SERVICE_PORT = 5606
 
 # 「读取全部」：从该 ID 起顺序尝试，连续失败达到上限则停止。
 READ_ALL_FIRST_ID = 1
@@ -266,18 +312,76 @@ def build_indexes(selector: Dict[str, Any]) -> List[int]:
 # ---------- SDK 交互 --------------------------------------------------------
 
 
-def connect_arm(ip: str):
+def _extract_connect_params(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """从 payload 中抽取连接参数，兼容新旧调用。"""
+    controller_ip = (
+        payload.get("controllerIp")
+        or payload.get("ip")
+        or ""
+    )
+    teach_panel_ip = payload.get("teachPanelIp") or None
+    if isinstance(teach_panel_ip, str) and not teach_panel_ip.strip():
+        teach_panel_ip = None
+    local_proxy = bool(payload.get("localProxy", False))
+    return {
+        "controller_ip": controller_ip,
+        "teach_panel_ip": teach_panel_ip,
+        "local_proxy": local_proxy,
+    }
+
+
+def connect_arm(controller_ip: str, teach_panel_ip: Any = None, local_proxy: bool = False):
+    """连接机器人（SDK 4.1.1）。
+
+    - controller_ip: 控制柜 IP（必填）
+    - teach_panel_ip: 示教器 IP（可选，仅工业机器人常用；协作/四轴可不填）
+    - local_proxy: 是否在本机启动代理服务。机器人软件 < v7.7 或无示教器时必须 True。
+    """
     _ensure_sdk_ready()
-    log_py(f"SDK Arm.connect begin ip={ip!r}")
+    log_py(
+        f"SDK Arm.connect begin controller_ip={controller_ip!r} "
+        f"teach_panel_ip={teach_panel_ip!r} local_proxy={local_proxy!r}"
+    )
     with redirect_sdk_stdout_to_stderr():
-        arm = Arm()
-        ret = arm.connect(ip)
+        try:
+            arm = Arm(local_proxy=local_proxy)
+        except TypeError:
+            if local_proxy:
+                log_py("Arm(local_proxy=...) 不受当前 SDK 版本支持，回退 Arm()")
+            arm = Arm()
+        if teach_panel_ip:
+            ret = arm.connect(controller_ip, teach_panel_ip)
+        else:
+            ret = arm.connect(controller_ip)
     if ret != StatusCodeEnum.OK:
         err = getattr(ret, "errmsg", ret)
         log_py(f"SDK Arm.connect failed: {err!r}")
         raise RuntimeError(f"连接机器人失败: {err}")
     log_py("SDK Arm.connect ok")
     return arm
+
+
+def _check_p_service(ip: str) -> None:
+    """检查 P 寄存器服务（program_pose HTTP API）端口是否可达。
+
+    P 寄存器使用独立的 HTTP 服务（端口 {P_SERVICE_PORT}），与 R/PR 寄存器所用通道不同。
+    若端口不可达，提前报出友好错误，而非让 SDK 抛出晦涩的 HTTPConnectionPool 异常。
+    """
+    log_py(f"_check_p_service begin ip={ip!r} port={P_SERVICE_PORT}")
+    try:
+        sock = socket.create_connection((ip, P_SERVICE_PORT), timeout=3.0)
+        sock.close()
+        log_py(f"_check_p_service ok ip={ip!r} port={P_SERVICE_PORT}")
+    except OSError as exc:
+        log_py(f"_check_p_service failed ip={ip!r} port={P_SERVICE_PORT} exc={exc!r}")
+        raise RuntimeError(
+            f"无法连接机器人的P寄存器服务（{ip}:{P_SERVICE_PORT}）。\n"
+            f"P寄存器（程序位姿）需要控制器额外开放 {P_SERVICE_PORT} 端口，"
+            f"而 R/PR 寄存器不受此影响。\n"
+            f"请检查：\n"
+            f"① 控制器固件/软件版本是否支持远程访问P寄存器（program_pose接口）；\n"
+            f"② 防火墙或网络策略是否屏蔽了 {P_SERVICE_PORT} 端口。"
+        ) from exc
 
 
 def _safe_disconnect(arm: Any) -> None:
@@ -288,10 +392,13 @@ def _safe_disconnect(arm: Any) -> None:
         log_py(f"SDK Arm.disconnect swallow: {exc!r}")
 
 
-def verify_connect(ip: str) -> Dict[str, Any]:
-    log_py(f"verify_connect begin ip={ip!r}")
+def verify_connect(conn: Dict[str, Any]) -> Dict[str, Any]:
+    log_py(
+        f"verify_connect begin controller_ip={conn['controller_ip']!r} "
+        f"teach_panel_ip={conn['teach_panel_ip']!r} local_proxy={conn['local_proxy']!r}"
+    )
     try:
-        arm = connect_arm(ip)
+        arm = connect_arm(**conn)
     except Exception as exc:
         log_py(f"verify_connect exception: {exc!r}")
         return {"ok": False, "message": str(exc)}
@@ -409,48 +516,58 @@ def read_pr_all_scan(arm) -> List[Dict[str, Any]]:
 
 
 def read_p_all_scan(arm, program_name: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    consec_fail = 0
-    idx = READ_ALL_FIRST_ID
+    """使用 read_all_poses 一次性获取程序中所有P点（SDK 4.4.3）。"""
     with redirect_sdk_stdout_to_stderr():
-        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
-            pose, ret = arm.program_pose.read(program_name, idx)
-            if ret == StatusCodeEnum.OK:
-                pos = pose.poseData.cartData.baseCart.position
-                tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
-                uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
-                coord = _coord_from_pose(pose)
-                rows.append(
-                    {
-                        "Type": "P",
-                        "ID": idx,
-                        "X": round3(pos.x),
-                        "Y": round3(pos.y),
-                        "Z": round3(pos.z),
-                        "A": round3(pos.a),
-                        "B": round3(pos.b),
-                        "C": round3(pos.c),
-                        "TF": tf,
-                        "UF": uf,
-                        "Coord": coord,
-                    }
-                )
-                consec_fail = 0
-            else:
-                consec_fail += 1
-            idx += 1
+        poses, ret = arm.program_pose.read_all_poses(program_name)
+    if ret != StatusCodeEnum.OK:
+        raise RuntimeError(
+            f"读取程序 {program_name!r} 中所有P点失败: {status_text(ret)}"
+        )
+    rows: List[Dict[str, Any]] = []
+    for pose in poses:
+        try:
+            pos = pose.poseData.cartData.baseCart.position
+            tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
+            uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
+            coord = _coord_from_pose(pose)
+            rows.append(
+                {
+                    "Type": "P",
+                    "ID": pose.id,
+                    "X": round3(pos.x),
+                    "Y": round3(pos.y),
+                    "Z": round3(pos.z),
+                    "A": round3(pos.a),
+                    "B": round3(pos.b),
+                    "C": round3(pos.c),
+                    "TF": tf,
+                    "UF": uf,
+                    "Coord": coord,
+                }
+            )
+        except Exception as exc:
+            log_py(f"read_p_all_scan skip pose id={getattr(pose, 'id', '?')} exc={exc!r}")
     return rows
 
 
-def read_preview(ip: str, req: Dict[str, Any]) -> Dict[str, Any]:
+def read_preview(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     reg_type = req["registerType"]
     selector = req.get("selector", {})
     mode = selector.get("mode", "range")
+    program_name = req.get("programName")
+    controller_ip = conn["controller_ip"]
     log_py(
-        f"read_preview begin type={reg_type!r} ip={ip!r} mode={mode!r} "
-        f"program={req.get('programName')!r}"
+        f"read_preview begin type={reg_type!r} controller_ip={controller_ip!r} "
+        f"mode={mode!r} program={program_name!r}"
     )
-    arm = connect_arm(ip)
+
+    # P 寄存器使用独立 HTTP 端口，提前检查可达性，避免返回误导性的空列表。
+    if reg_type == "P":
+        if not program_name:
+            raise RuntimeError("读取 P 点时 programName 不能为空。")
+        _check_p_service(controller_ip)
+
+    arm = connect_arm(**conn)
     try:
         if mode == "all":
             if reg_type == "R":
@@ -458,9 +575,6 @@ def read_preview(ip: str, req: Dict[str, Any]) -> Dict[str, Any]:
             elif reg_type == "PR":
                 rows = read_pr_all_scan(arm)
             elif reg_type == "P":
-                program_name = req.get("programName")
-                if not program_name:
-                    raise RuntimeError("读取 P 点时 programName 不能为空。")
                 rows = read_p_all_scan(arm, program_name)
             else:
                 raise RuntimeError("不支持的寄存器类型。")
@@ -469,9 +583,6 @@ def read_preview(ip: str, req: Dict[str, Any]) -> Dict[str, Any]:
         elif reg_type == "PR":
             rows = read_pr(arm, build_indexes(selector))
         elif reg_type == "P":
-            program_name = req.get("programName")
-            if not program_name:
-                raise RuntimeError("读取 P 点时 programName 不能为空。")
             rows = read_p(arm, program_name, build_indexes(selector))
         else:
             raise RuntimeError("不支持的寄存器类型。")
@@ -576,25 +687,43 @@ def write_p(arm, program_name: str, row: Dict[str, Any], policy: str) -> Tuple[b
     coord_val = row.get("Coord", row.get("Coord（L/R）", "R"))
     _apply_coord_to_pose(target_pose, str(coord_val))
 
-    with redirect_sdk_stdout_to_stderr():
-        if exists:
-            ret = unwrap_status(arm.program_pose.write(program_name, idx, target_pose))
-        else:
-            ret = unwrap_status(arm.program_pose.add(program_name, idx, target_pose))
+    try:
+        with redirect_sdk_stdout_to_stderr():
+            if exists:
+                ret = unwrap_status(arm.program_pose.write(program_name, idx, target_pose))
+            else:
+                ret = unwrap_status(arm.program_pose.add(program_name, idx, target_pose))
+    except Exception as exc:
+        exc_str = str(exc)
+        if "10061" in exc_str or "HTTPConnectionPool" in exc_str or "Connection refused" in exc_str.lower():
+            return False, (
+                f"P寄存器服务（端口{P_SERVICE_PORT}）连接中断，写入失败。"
+                f"请检查机器人控制器网络状态。"
+            )
+        return False, f"写入P点异常: {exc_str[:200]}"
     if ret != StatusCodeEnum.OK:
         return False, status_text(ret)
     return True, "write"
 
 
-def apply_rows(ip: str, req: Dict[str, Any]) -> Dict[str, Any]:
+def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     reg_type = req["registerType"]
     policy = req.get("conflictPolicy", "skip")
     rows: List[Dict[str, Any]] = req.get("rows", [])
+    program_name = req.get("programName")
+    controller_ip = conn["controller_ip"]
     log_py(
-        f"apply_rows begin ip={ip!r} type={reg_type!r} policy={policy!r} row_count={len(rows)} "
-        f"program={req.get('programName')!r}"
+        f"apply_rows begin controller_ip={controller_ip!r} type={reg_type!r} "
+        f"policy={policy!r} row_count={len(rows)} program={program_name!r}"
     )
-    arm = connect_arm(ip)
+
+    # P 寄存器使用独立 HTTP 端口，提前检查可达性，避免写入时抛出晦涩的 SDK 异常。
+    if reg_type == "P":
+        if not program_name:
+            raise RuntimeError("写入 P 点时 programName 不能为空。")
+        _check_p_service(controller_ip)
+
+    arm = connect_arm(**conn)
     success = 0
     skipped = 0
     failed: List[str] = []
@@ -605,9 +734,6 @@ def apply_rows(ip: str, req: Dict[str, Any]) -> Dict[str, Any]:
             elif reg_type == "PR":
                 ok, tag = write_pr(arm, row, policy)
             elif reg_type == "P":
-                program_name = req.get("programName")
-                if not program_name:
-                    raise RuntimeError("写入 P 点时 programName 不能为空。")
                 ok, tag = write_p(arm, program_name, row, policy)
             else:
                 raise RuntimeError("不支持的寄存器类型。")
@@ -694,9 +820,12 @@ def export_excel(register_type: str, rows: List[Dict[str, Any]], output_path: st
     return {"ok": True, "message": f"已保存到 {output_file}"}
 
 
-def fetch_robot_meta(ip: str) -> Dict[str, Any]:
-    log_py(f"fetch_robot_meta begin ip={ip!r}")
-    arm = connect_arm(ip)
+def fetch_robot_meta(conn: Dict[str, Any]) -> Dict[str, Any]:
+    log_py(
+        f"fetch_robot_meta begin controller_ip={conn['controller_ip']!r} "
+        f"teach_panel_ip={conn['teach_panel_ip']!r} local_proxy={conn['local_proxy']!r}"
+    )
+    arm = connect_arm(**conn)
     try:
         with redirect_sdk_stdout_to_stderr():
             model_info, ret_m = arm.get_arm_model_info()
@@ -735,9 +864,9 @@ def export_template(register_type: str, output_path: str) -> Dict[str, Any]:
 def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
     action = payload.get("action")
     if action == "read_preview":
-        return read_preview(payload["ip"], payload["request"])
+        return read_preview(_extract_connect_params(payload), payload["request"])
     if action == "apply_rows":
-        return apply_rows(payload["ip"], payload["request"])
+        return apply_rows(_extract_connect_params(payload), payload["request"])
     if action == "export_excel":
         return export_excel(
             payload["registerType"], payload.get("rows", []), payload["outputPath"]
@@ -745,9 +874,9 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
     if action == "export_template":
         return export_template(payload["registerType"], payload["outputPath"])
     if action == "fetch_robot_meta":
-        return fetch_robot_meta(payload["ip"])
+        return fetch_robot_meta(_extract_connect_params(payload))
     if action == "verify_connect":
-        return verify_connect(payload["ip"])
+        return verify_connect(_extract_connect_params(payload))
     raise RuntimeError(f"未知 action: {action!r}")
 
 

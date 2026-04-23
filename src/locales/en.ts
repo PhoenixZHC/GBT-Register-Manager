@@ -13,20 +13,21 @@ export default {
     skipExisting: "Skip existing",
     overwriteExisting: "Overwrite existing",
     bodyImport:
-      "{count} register(s) already exist on the robot (ID overlap with the table). Choose: Overwrite replaces existing values; Skip keeps values on the robot; Stop cancels the import without writing any data.",
+      "{total} register(s) already exist on the robot (ID overlap with the table). Choose: Overwrite replaces existing values; Skip keeps values on the robot; Stop cancels the import without writing any data.",
     bodyCreate:
       "Detected existing registers: {ids}. Choose: Overwrite replaces existing values; Skip keeps current robot values; Stop cancels batch creation without writing data."
   },
   messages: {
-    enterIp: "Please enter the robot IP address.",
+    enterIp: "Please enter the controller IP address.",
     invalidIp: "Please enter a valid IPv4 address (e.g. 192.168.1.100).",
+    invalidTeachPanelIp: "Teach pendant IP is invalid. Enter a valid IPv4 or leave it blank.",
     connectSuccess: "Connected to the robot successfully.",
     connectDebug: "Debug mode (no real robot connection).",
     connectFailed: "Connection failed.",
     needConnect: "Please connect to the robot first.",
     pReadNeedProgram: "Program name is required to read P registers.",
-    readDone: "Read finished: {count} record(s).",
-    excelPreview: "File loaded for preview: {count} row(s).",
+    readDone: "Read finished: {total} record(s).",
+    excelPreview: "File loaded for preview: {total} row(s).",
     noExportData: "No preview data to export.",
     needPreviewData: "Please prepare preview data first.",
     pWriteNeedProgram: "Program name is required before writing P registers.",
@@ -46,6 +47,8 @@ export default {
   connect: {
     title: "Connect to robot",
     ipPlaceholder: "IP, e.g. 10.27.1.254",
+    controllerIpPlaceholder: "Controller IP, e.g. 10.27.1.254",
+    teachPanelIpPlaceholder: "Teach pendant IP (optional; leave blank if none)",
     recentPlaceholder: "Recent IPs",
     connect: "Connect",
     disconnect: "Disconnect"

@@ -3,6 +3,7 @@ import type {
   ApplyRequest,
   CommonResponse,
   ConnectionState,
+  ConnectRequest,
   ReadRequest,
   RegisterType,
   RobotMeta
@@ -78,8 +79,8 @@ async function traceInvoke<T>(command: string, args: Record<string, unknown>, fn
   }
 }
 
-export async function connectRobot(ip: string): Promise<ConnectionState> {
-  return traceInvoke("connect_robot", { ip }, () => invoke("connect_robot", { ip }));
+export async function connectRobot(req: ConnectRequest): Promise<ConnectionState> {
+  return traceInvoke("connect_robot", { req }, () => invoke("connect_robot", { req }));
 }
 
 export async function getConnectionStatus(): Promise<ConnectionState> {

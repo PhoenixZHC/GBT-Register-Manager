@@ -93,8 +93,28 @@ struct AppState {
 #[serde(rename_all = "camelCase")]
 struct ConnectionState {
     connected: bool,
+    /// 控制柜 IP（显示用）。保留字段名 `ip` 以兼容历史持久化/前端旧逻辑。
     ip: String,
+    /// 示教器 IP（可选）。四轴无 TP 时为空。
+    #[serde(default)]
+    teach_panel_ip: String,
+    /// 是否让 SDK 在本机启动代理服务（无 TP 或旧软件时需 true）。
+    #[serde(default)]
+    local_proxy: bool,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectRequest {
+    /// 控制柜 IP（必填）。
+    controller_ip: String,
+    /// 示教器 IP（可选）。
+    #[serde(default)]
+    teach_panel_ip: Option<String>,
+    /// 是否开启本机代理（四轴无 TP 时应为 true）。
+    #[serde(default)]
+    local_proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +168,24 @@ fn lock_connection<'a>(
         .map_err(|e| format!("连接状态锁异常，请重启应用：{e}"))
 }
 
+/// 把已连接状态序列化成 sidecar payload 所需的连接字段（camelCase）。
+fn connection_payload_fields(conn: &ConnectionState) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("controllerIp".into(), Value::String(conn.ip.clone()));
+    // 兼容旧 payload 字段名
+    m.insert("ip".into(), Value::String(conn.ip.clone()));
+    m.insert(
+        "teachPanelIp".into(),
+        if conn.teach_panel_ip.is_empty() {
+            Value::Null
+        } else {
+            Value::String(conn.teach_panel_ip.clone())
+        },
+    );
+    m.insert("localProxy".into(), Value::Bool(conn.local_proxy));
+    m
+}
+
 fn friendly_python_error(raw: &str) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -171,6 +209,7 @@ fn friendly_python_error(raw: &str) -> String {
 
 enum Sidecar {
     /// 开发期：系统 Python + bridge.py
+    #[cfg(debug_assertions)]
     DevScript { python: String, script: PathBuf, cwd: PathBuf },
     /// 发布期：PyInstaller 冻结的 gbt-bridge.exe
     FrozenExe { exe: PathBuf },
@@ -225,6 +264,7 @@ fn resolve_sidecar() -> Result<Sidecar, String> {
 
 fn build_sidecar_command(sidecar: &Sidecar) -> Command {
     let mut cmd = match sidecar {
+        #[cfg(debug_assertions)]
         Sidecar::DevScript { python, script, cwd } => {
             let mut c = Command::new(python);
             c.arg(script).current_dir(cwd);
@@ -369,10 +409,9 @@ async fn fetch_robot_meta(state: State<'_, AppState>) -> Result<RobotMeta, Strin
             controller_version: String::new(),
         });
     }
-    let payload = serde_json::json!({
-      "action": "fetch_robot_meta",
-      "ip": conn.ip
-    });
+    let mut payload_map = connection_payload_fields(&conn);
+    payload_map.insert("action".into(), Value::String("fetch_robot_meta".into()));
+    let payload = Value::Object(payload_map);
     let v = run_python_action_async(payload).await.map_err(|e| {
         gbt_log(&format!("fetch_robot_meta python_err {e}"));
         e
@@ -398,30 +437,49 @@ async fn fetch_robot_meta(state: State<'_, AppState>) -> Result<RobotMeta, Strin
 }
 
 #[tauri::command]
-async fn connect_robot(ip: String, state: State<'_, AppState>) -> Result<ConnectionState, String> {
+async fn connect_robot(
+    req: ConnectRequest,
+    state: State<'_, AppState>,
+) -> Result<ConnectionState, String> {
     gbt_log("connect_robot begin");
-    let trimmed = ip.trim().to_string();
+    let controller_ip = req.controller_ip.trim().to_string();
+    let teach_panel_ip = req
+        .teach_panel_ip
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+    let local_proxy = req.local_proxy;
 
-    if trimmed.is_empty() {
+    if controller_ip.is_empty() {
         let mut conn = lock_connection(&state)?;
         conn.connected = false;
-        conn.message = "IP 不能为空".to_string();
-        gbt_log("connect_robot end empty_ip");
+        conn.message = "控制柜 IP 不能为空".to_string();
+        gbt_log("connect_robot end empty_controller_ip");
         return Ok(conn.clone());
     }
-    if trimmed == DEBUG_BYPASS_IP {
+    if controller_ip == DEBUG_BYPASS_IP {
         let mut conn = lock_connection(&state)?;
         conn.connected = true;
-        conn.ip = trimmed.clone();
+        conn.ip = controller_ip.clone();
+        conn.teach_panel_ip = teach_panel_ip.clone();
+        conn.local_proxy = local_proxy;
         conn.message = "调试模式（未连接真实机器人）".to_string();
         gbt_log("connect_robot end debug_bypass");
         return Ok(conn.clone());
     }
 
-    gbt_log(&format!("connect_robot verify_connect ip={trimmed}"));
+    gbt_log(&format!(
+        "connect_robot verify_connect controller_ip={controller_ip} \
+         teach_panel_ip={teach_panel_ip} local_proxy={local_proxy}"
+    ));
+
     let payload = serde_json::json!({
         "action": "verify_connect",
-        "ip": trimmed
+        "controllerIp": controller_ip,
+        "ip": controller_ip,
+        "teachPanelIp": if teach_panel_ip.is_empty() { Value::Null } else { Value::String(teach_panel_ip.clone()) },
+        "localProxy": local_proxy,
     });
 
     let result = run_python_action_async(payload).await;
@@ -437,29 +495,39 @@ async fn connect_robot(ip: String, state: State<'_, AppState>) -> Result<Connect
                 .to_string();
             if ok {
                 conn.connected = true;
-                conn.ip = trimmed.clone();
+                conn.ip = controller_ip.clone();
+                conn.teach_panel_ip = teach_panel_ip.clone();
+                conn.local_proxy = local_proxy;
                 conn.message = if msg.is_empty() {
                     "连接已建立".to_string()
                 } else {
                     msg
                 };
-                gbt_log(&format!("connect_robot ok ip={trimmed}"));
+                gbt_log(&format!("connect_robot ok controller_ip={controller_ip}"));
             } else {
                 conn.connected = false;
                 conn.ip.clear();
+                conn.teach_panel_ip.clear();
+                conn.local_proxy = false;
                 conn.message = if msg.is_empty() {
                     "连接失败".to_string()
                 } else {
                     msg.clone()
                 };
-                gbt_log(&format!("connect_robot failed ip={trimmed} msg={msg}"));
+                gbt_log(&format!(
+                    "connect_robot failed controller_ip={controller_ip} msg={msg}"
+                ));
             }
         }
         Err(e) => {
             conn.connected = false;
             conn.ip.clear();
+            conn.teach_panel_ip.clear();
+            conn.local_proxy = false;
             conn.message = e.clone();
-            gbt_log(&format!("connect_robot python_err ip={trimmed} err={e}"));
+            gbt_log(&format!(
+                "connect_robot python_err controller_ip={controller_ip} err={e}"
+            ));
         }
     }
     Ok(conn.clone())
@@ -476,6 +544,8 @@ fn disconnect_robot(state: State<AppState>) -> Result<CommonResponse, String> {
     let mut conn = lock_connection(&state)?;
     conn.connected = false;
     conn.ip.clear();
+    conn.teach_panel_ip.clear();
+    conn.local_proxy = false;
     conn.message = "已断开连接".to_string();
     Ok(CommonResponse {
         ok: true,
@@ -506,11 +576,13 @@ async fn read_registers(
         gbt_log("read_registers debug_bypass empty");
         return Ok(vec![]);
     }
-    let payload = serde_json::json!({
-      "action": "read_preview",
-      "ip": conn.ip,
-      "request": req
-    });
+    let mut payload_map = connection_payload_fields(&conn);
+    payload_map.insert("action".into(), Value::String("read_preview".into()));
+    payload_map.insert(
+        "request".into(),
+        serde_json::to_value(&req).map_err(|e| format!("序列化 ReadRequest 失败: {e}"))?,
+    );
+    let payload = Value::Object(payload_map);
     let result = run_python_action_async(payload).await.map_err(|e| {
         gbt_log(&format!("read_registers python_err {e}"));
         e
@@ -548,11 +620,13 @@ async fn apply_registers(
             details: None,
         });
     }
-    let payload = serde_json::json!({
-      "action": "apply_rows",
-      "ip": conn.ip,
-      "request": req
-    });
+    let mut payload_map = connection_payload_fields(&conn);
+    payload_map.insert("action".into(), Value::String("apply_rows".into()));
+    payload_map.insert(
+        "request".into(),
+        serde_json::to_value(&req).map_err(|e| format!("序列化 ApplyRequest 失败: {e}"))?,
+    );
+    let payload = Value::Object(payload_map);
     let result = run_python_action_async(payload).await.map_err(|e| {
         gbt_log(&format!("apply_registers python_err {e}"));
         e
@@ -700,6 +774,8 @@ pub fn run() {
         connection: Mutex::new(ConnectionState {
             connected: false,
             ip: String::new(),
+            teach_panel_ip: String::new(),
+            local_proxy: false,
             message: "未连接".to_string(),
         }),
     };

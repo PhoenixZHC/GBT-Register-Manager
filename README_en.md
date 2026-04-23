@@ -10,7 +10,7 @@
 
 This application batch-operates **GBT (Agilebot)** robot **R**, **PR**, and **P** registers: read from the controller and export to Excel, import from Excel back to the robot, and batch-create registers.
 
-Current app version: `v1.0.0`
+Current app version: `v1.0.2`
 
 ## Compatible SDK
 
@@ -38,7 +38,7 @@ Agilebot Python SDK (GBT) | v2.0.1.0
 
 ## Typical workflow
 
-1. Open the app, enter the controller **IP**, and click **Connect**.
+1. Open the app, enter the **controller cabinet IP** (optional **teach pendant IP**), and click **Connect** (the sidecar uses the SDK **local proxy** path for reliable access to **P** registers and related service ports).
 2. In the left sidebar, choose **Batch create**, **Data export**, or **Data import**.
 3. Select **R**, **P**, or **PR** first; for **P**, enter the **program name** wherever required.
 4. **Export only**: set a range or **All** → **Read from robot** → check the table → **Export to Excel** if needed.
@@ -64,6 +64,17 @@ Agilebot Python SDK (GBT) | v2.0.1.0
 - **“Read all”:** There is no small fixed ID window. Scanning starts at **ID 1** in order; each failed read adds to a **consecutive failure** count (a successful read resets it). After **10 consecutive failures**, scanning stops and only earlier successful reads are kept. If register IDs are **not contiguous** and there are large gaps, the result may stop before the real maximum ID—use a **custom range** instead. To avoid overly long scans, the implementation also stops at an **ID ceiling of 100000**.
 
 ## Changelog
+
+### V1.0.2 (2026-04-23)
+
+- Version bumped to **V1.0.2**.
+
+### V1.0.1 (2026-04-23)
+
+- **Connection:** Separate **controller cabinet IP** and optional **teach pendant IP**; the Python sidecar talks to the controller through the SDK **local proxy** (`local_proxy`) for stable **P** register access (service ports such as **5606**).
+- **Fix:** For **PR / P**, if the SDK `Posture` object was not initialized, **coord** and related fields could be **silently dropped** when writing or applying coordinates—the sidecar now initializes pose objects before assignment.
+- **Build & release:** Windows bundles ship as **MSI** and **NSIS**; post-build rename script for installers; **publisher** set to **Agilebot**.
+- **UI:** Avoided **vue-i18n** reserved interpolation tokens (e.g. progress strings use `{total}`).
 
 ### V1.0.0 (2026-04-22)
 

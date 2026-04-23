@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "GBTRegisterManager",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "identifier": "com.gbt.register.manager",
   "build": {
     "frontendDist": "../dist",
@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi"],
+    "targets": ["msi", "nsis"],
     "icon": [
       "icons/icon.ico"
     ],
@@ -37,7 +37,8 @@
       "binaries/gbt-bridge"
     ],
     "resources": [],
-    "copyright": "© 2026 GBT. All rights reserved.",
+    "publisher": "Agilebot",
+    "copyright": "© 2026 Agilebot. All rights reserved.",
     "category": "DeveloperTool",
     "shortDescription": "捷勃特机器人寄存器管理工具",
     "longDescription": "用于批量读写捷勃特（Agilebot）机器人 R/P/PR 寄存器，支持 Excel 导入导出与批量新建。",
@@ -49,6 +50,12 @@
       "wix": {
         "upgradeCode": "4f91b368-4cc3-5e9b-a473-80c13c12ed34",
         "language": "zh-CN"
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false,
+        "installMode": "perMachine"
       }
     }
   }

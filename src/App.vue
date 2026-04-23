@@ -109,14 +109,25 @@ function promptRegisterConflict(content: string): Promise<RegisterConflictChoice
 }
 
 const loading = ref(false);
+/** 控制柜 IP（必填）。 */
 const ip = ref("");
+/** 示教器 IP（可选；工业机器人通常需要填，四轴无 TP 时留空）。 */
+const teachPanelIp = ref("");
+/**
+ * 恒为 true：始终使用 SDK 本地代理（Arm(local_proxy=True)）。
+ * 根据 SDK 手册 4.1.1：
+ *  - 无示教器（四轴等）或软件 < v7.7 时必须开启；
+ *  - 有示教器/新固件场景下开启同样可用，不影响功能。
+ * 为避免用户困扰，界面不再暴露此开关。
+ */
+const LOCAL_PROXY_ALWAYS_ON = true;
 const recentIps = ref<string[]>([]);
 const recentPickerKey = ref(0);
 const connection = ref<ConnectionState>({ connected: false, ip: "", message: "" });
 const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
 const robotVersion = ref("");
-const DEFAULT_APP_VERSION = "1.0.0";
+const DEFAULT_APP_VERSION = "1.0.2";
 const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
@@ -284,6 +295,7 @@ async function loadRobotMeta() {
 
 async function onConnect() {
   const trimmed = ip.value.trim();
+  const tpTrimmed = teachPanelIp.value.trim();
   if (!trimmed) {
     message.warning(t("messages.enterIp"));
     return;
@@ -292,9 +304,18 @@ async function onConnect() {
     message.warning(t("messages.invalidIp"));
     return;
   }
+  // 示教器 IP 选填，但只要填了就必须是合法 IPv4。
+  if (tpTrimmed && !isValidIPv4(tpTrimmed)) {
+    message.warning(t("messages.invalidTeachPanelIp"));
+    return;
+  }
   loading.value = true;
   try {
-    connection.value = await connectRobot(trimmed);
+    connection.value = await connectRobot({
+      controllerIp: trimmed,
+      teachPanelIp: tpTrimmed || undefined,
+      localProxy: LOCAL_PROXY_ALWAYS_ON
+    });
     if (connection.value.connected) {
       if (trimmed !== DEBUG_BYPASS_IP && !recentIps.value.includes(trimmed)) {
         recentIps.value = [trimmed, ...recentIps.value].slice(0, 5);
@@ -350,7 +371,7 @@ async function onReadPreviewIO() {
       selector: { mode: ioMode.value, startId: ioStartId.value, endId: ioEndId.value }
     });
     ioDetails.value = [];
-    message.success(t("messages.readDone", { count: ioRows.value.length }));
+    message.success(t("messages.readDone", { total: ioRows.value.length }));
   } catch (e) {
     message.error(errMessage(e));
   } finally {
@@ -367,7 +388,7 @@ async function onImportExcel(ev: Event) {
   try {
     ioRows.value = await parseExcelForPreview(file, ioType.value);
     ioDetails.value = [];
-    message.success(t("messages.excelPreview", { count: ioRows.value.length }));
+    message.success(t("messages.excelPreview", { total: ioRows.value.length }));
   } catch (error) {
     if (error instanceof ExcelUserError) {
       message.error(t(error.message, error.params ?? {}));
@@ -428,7 +449,7 @@ async function onApplyIO() {
     const uniqueImportIds = [...new Set(rowIds)];
     const conflictCount = uniqueImportIds.filter((id) => existingIds.has(id)).length;
     if (conflictCount > 0) {
-      const choice = await promptRegisterConflict(t("conflict.bodyImport", { count: conflictCount }));
+      const choice = await promptRegisterConflict(t("conflict.bodyImport", { total: conflictCount }));
       if (choice === "stop") {
         message.info(t("messages.importCancelled"));
         return;
@@ -621,7 +642,18 @@ onMounted(async () => {
         <section v-if="!isConnected" class="hero-connect connect-only">
           <h1 class="section-title">{{ t("connect.title") }}</h1>
           <div class="connect-grid">
-            <n-input v-model:value="ip" :placeholder="t('connect.ipPlaceholder')" :disabled="loading" clearable />
+            <n-input
+              v-model:value="ip"
+              :placeholder="t('connect.controllerIpPlaceholder')"
+              :disabled="loading"
+              clearable
+            />
+            <n-input
+              v-model:value="teachPanelIp"
+              :placeholder="t('connect.teachPanelIpPlaceholder')"
+              :disabled="loading"
+              clearable
+            />
             <n-select
               :key="recentPickerKey"
               :options="recentOptions"
@@ -852,7 +884,7 @@ onMounted(async () => {
 }
 .connect-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px 100px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 200px 100px;
   gap: 12px;
   align-items: end;
 }

@@ -1,26 +1,32 @@
 $ErrorActionPreference = "Stop"
 
+$tauriCache = Join-Path $env:LOCALAPPDATA "tauri"
 
-
-$wixRoot = Join-Path $env:LOCALAPPDATA "tauri\WixTools314"
-
+$wixRoot = Join-Path $tauriCache "WixTools314"
 $candle = Join-Path $wixRoot "candle.exe"
 
+$nsisRoot = Join-Path $tauriCache "NSIS"
+$makensis = Join-Path $nsisRoot "makensis.exe"
 
+Write-Host "[tauri-tools] Ensuring WiX (MSI) and NSIS (EXE) caches are ready..."
 
-Write-Host "[tauri-tools] Ensuring WiX (MSI) cache is ready..."
-
-
+$missing = @()
 
 if (Test-Path $candle) {
-
-  Write-Host "[tauri-tools] WiX cache already available: $wixRoot"
-
-  exit 0
-
+  Write-Host "[tauri-tools] WiX cache found: $wixRoot"
+} else {
+  $missing += "WiX 3.11 (expected at '$candle')"
 }
 
+if (Test-Path $makensis) {
+  Write-Host "[tauri-tools] NSIS cache found: $nsisRoot"
+} else {
+  $missing += "NSIS 3 (expected at '$makensis')"
+}
 
+if ($missing.Count -gt 0) {
+  $details = $missing -join "; "
+  throw "[tauri-tools] Missing: $details. Run: npm run tauri:download-wix-nsis (installs WiX/NSIS into %LOCALAPPDATA%\tauri)"
+}
 
-throw "[tauri-tools] WiX 3.11 not found at '$candle'. Run: npm run tauri:download-wix-nsis (installs WiX into %LOCALAPPDATA%\tauri\WixTools314)"
-
+Write-Host "[tauri-tools] All bundler tools are ready."
