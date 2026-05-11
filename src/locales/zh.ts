@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "捷勃特机器人寄存器管理工具",
+    title: "捷勃特机器人工具箱",
     model: "机型",
     software: "软件"
   },
@@ -56,8 +56,20 @@ export default {
   sidebar: {
     title: "功能菜单",
     batchCreate: "批量新建寄存器",
-    dataExport: "数据导出",
-    dataImport: "数据导入"
+    dataExport: "寄存器数据导出",
+    dataImport: "寄存器数据导入",
+    logDataExport: "日志/程序与数据导出"
+  },
+  logExport: {
+    cardTitle: "日志与程序数据导出",
+    pickDate: "选择日志日期（公历）",
+    hintProgramData: "导出程序数据不依赖上方日期。",
+    exportControllerLogs: "导出控制柜日志",
+    exportTeachPanelLogs: "导出示教器日志",
+    exportProgramData: "导出程序数据",
+    needConnectHint: "请先连接机器人后再导出。",
+    noTeachIpHint: "当前未填写示教器 IP，无法导出示教器日志。",
+    cancelledSave: "已取消保存"
   },
   create: {
     cardTitle: "快速批量新建寄存器",
@@ -65,13 +77,13 @@ export default {
     running: "新建中"
   },
   export: {
-    title: "数据导出",
+    title: "寄存器数据导出",
     readPreview: "从机器人读取并预览",
     reading: "读取中",
     toExcel: "导出到 Excel"
   },
   import: {
-    title: "数据导入",
+    title: "寄存器数据导入",
     pickExcel: "导入 Excel 并预览",
     downloadTemplate: "下载当前类型模板",
     applyRobot: "导入到机器人",

@@ -8,6 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
+mod sftp_export;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -21,13 +23,16 @@ fn show_native_error(title: &str, msg: &str) {
     extern "system" {
         fn MessageBoxW(hwnd: *mut (), text: *const u16, caption: *const u16, utype: u32) -> i32;
     }
-    let encode = |s: &str| -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(once(0)).collect()
-    };
+    let encode = |s: &str| -> Vec<u16> { OsStr::new(s).encode_wide().chain(once(0)).collect() };
     let text = encode(msg);
     let caption = encode(title);
     unsafe {
-        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10 /*MB_ICONERROR*/);
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x10, /*MB_ICONERROR*/
+        );
     }
 }
 
@@ -210,7 +215,11 @@ fn friendly_python_error(raw: &str) -> String {
 enum Sidecar {
     /// 开发期：系统 Python + bridge.py
     #[cfg(debug_assertions)]
-    DevScript { python: String, script: PathBuf, cwd: PathBuf },
+    DevScript {
+        python: String,
+        script: PathBuf,
+        cwd: PathBuf,
+    },
     /// 发布期：PyInstaller 冻结的 gbt-bridge.exe
     FrozenExe { exe: PathBuf },
 }
@@ -265,7 +274,11 @@ fn resolve_sidecar() -> Result<Sidecar, String> {
 fn build_sidecar_command(sidecar: &Sidecar) -> Command {
     let mut cmd = match sidecar {
         #[cfg(debug_assertions)]
-        Sidecar::DevScript { python, script, cwd } => {
+        Sidecar::DevScript {
+            python,
+            script,
+            cwd,
+        } => {
             let mut c = Command::new(python);
             c.arg(script).current_dir(cwd);
             c
@@ -304,8 +317,7 @@ fn extract_frame(stdout: &[u8]) -> Result<Value, String> {
         .find(FRAME_END)
         .ok_or_else(|| "Python 输出缺少 <<<GBT-END>>> 标记，可能已被截断。".to_string())?;
     let body = rest[..end].trim();
-    serde_json::from_str::<Value>(body)
-        .map_err(|e| format!("解析 Python 输出 JSON 失败: {e}"))
+    serde_json::from_str::<Value>(body).map_err(|e| format!("解析 Python 输出 JSON 失败: {e}"))
 }
 
 fn run_python_action(payload: Value) -> Result<Value, String> {
@@ -332,8 +344,8 @@ fn run_python_action(payload: Value) -> Result<Value, String> {
             .stdin
             .as_mut()
             .ok_or_else(|| "无法打开 sidecar stdin".to_string())?;
-        let payload_bytes = serde_json::to_vec(&payload)
-            .map_err(|e| format!("序列化 payload 失败: {e}"))?;
+        let payload_bytes =
+            serde_json::to_vec(&payload).map_err(|e| format!("序列化 payload 失败: {e}"))?;
         stdin
             .write_all(&payload_bytes)
             .map_err(|e| format!("写入 sidecar stdin 失败: {e}"))?;
@@ -638,14 +650,11 @@ async fn apply_registers(
             .and_then(Value::as_str)
             .unwrap_or("执行完成")
             .to_string(),
-        details: result
-            .get("details")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<String>>()
-            }),
+        details: result.get("details").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        }),
     };
     gbt_log(&format!(
         "apply_registers end ok={} detail_count={}",
@@ -659,6 +668,49 @@ fn file_path_to_string(path: FilePath) -> Result<String, String> {
     path.into_path()
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| format!("无法解析保存路径: {e}"))
+}
+
+/// 导出前校验：已连接、非调试绕过、控制柜 IP 与当前会话一致。
+fn validate_export_controller_session(
+    state: &State<'_, AppState>,
+    controller_ip: &str,
+) -> Result<(), String> {
+    let conn = lock_connection(state)?.clone();
+    if !conn.connected {
+        return Err("请先连接机器人".into());
+    }
+    if conn.ip == DEBUG_BYPASS_IP {
+        return Err("调试模式不支持日志与程序数据导出".into());
+    }
+    if conn.ip.trim() != controller_ip.trim() {
+        return Err("连接信息与当前会话不一致".into());
+    }
+    Ok(())
+}
+
+/// 示教器日志导出：额外要求示教器 IP 已配置且与当前会话一致（单次加锁，避免重入死锁）。
+fn validate_export_teach_session(
+    state: &State<'_, AppState>,
+    controller_ip: &str,
+    teach_panel_ip: &str,
+) -> Result<(), String> {
+    let conn = lock_connection(state)?.clone();
+    if !conn.connected {
+        return Err("请先连接机器人".into());
+    }
+    if conn.ip == DEBUG_BYPASS_IP {
+        return Err("调试模式不支持日志与程序数据导出".into());
+    }
+    if conn.ip.trim() != controller_ip.trim() {
+        return Err("连接信息与当前会话不一致".into());
+    }
+    if conn.teach_panel_ip.trim().is_empty() {
+        return Err("未配置示教器 IP".into());
+    }
+    if conn.teach_panel_ip.trim() != teach_panel_ip.trim() {
+        return Err("连接信息与当前会话不一致".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -767,6 +819,175 @@ async fn export_template_excel(
     })
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportControllerLogsRequest {
+    controller_ip: String,
+    date_yyyy_mm_dd: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportTeachPanelLogsRequest {
+    controller_ip: String,
+    teach_panel_ip: String,
+    date_yyyy_mm_dd: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportProgramDataRequest {
+    controller_ip: String,
+}
+
+#[tauri::command]
+async fn export_controller_logs_zip(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    req: ExportControllerLogsRequest,
+) -> Result<CommonResponse, String> {
+    validate_export_controller_session(&state, &req.controller_ip)?;
+    let yyyymmdd = sftp_export::parse_export_date(&req.date_yyyy_mm_dd)?;
+    let default_name = format!("controller_logs_{yyyymmdd}.zip");
+    let file_path = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        let default_name = default_name.clone();
+        move || {
+            app.dialog()
+                .file()
+                .add_filter("ZIP", &["zip"])
+                .set_file_name(&default_name)
+                .blocking_save_file()
+        }
+    })
+    .await
+    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+
+    let Some(fp) = file_path else {
+        return Ok(CommonResponse {
+            ok: false,
+            message: "已取消保存".into(),
+            details: None,
+        });
+    };
+    let zip_path = file_path_to_string(fp)?;
+    let host = req.controller_ip;
+    let count = tauri::async_runtime::spawn_blocking(move || {
+        sftp_export::run_export_controller_logs(&host, &yyyymmdd, std::path::Path::new(&zip_path))
+    })
+    .await
+    .map_err(|e| format!("导出任务失败: {e}"))??;
+
+    if count == 0 {
+        return Ok(CommonResponse {
+            ok: false,
+            message: "未查找到对应日期的日志".into(),
+            details: None,
+        });
+    }
+    Ok(CommonResponse {
+        ok: true,
+        message: format!("已导出 {count} 个日志文件"),
+        details: None,
+    })
+}
+
+#[tauri::command]
+async fn export_teach_panel_logs_zip(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    req: ExportTeachPanelLogsRequest,
+) -> Result<CommonResponse, String> {
+    validate_export_teach_session(&state, &req.controller_ip, &req.teach_panel_ip)?;
+    let yyyymmdd = sftp_export::parse_export_date(&req.date_yyyy_mm_dd)?;
+    let default_name = format!("teach_panel_logs_{yyyymmdd}.zip");
+    let file_path = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        let default_name = default_name.clone();
+        move || {
+            app.dialog()
+                .file()
+                .add_filter("ZIP", &["zip"])
+                .set_file_name(&default_name)
+                .blocking_save_file()
+        }
+    })
+    .await
+    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+
+    let Some(fp) = file_path else {
+        return Ok(CommonResponse {
+            ok: false,
+            message: "已取消保存".into(),
+            details: None,
+        });
+    };
+    let zip_path = file_path_to_string(fp)?;
+    let host = req.teach_panel_ip;
+    let count = tauri::async_runtime::spawn_blocking(move || {
+        sftp_export::run_export_teach_panel_logs(&host, &yyyymmdd, std::path::Path::new(&zip_path))
+    })
+    .await
+    .map_err(|e| format!("导出任务失败: {e}"))??;
+
+    if count == 0 {
+        return Ok(CommonResponse {
+            ok: false,
+            message: "未查找到对应日期的日志".into(),
+            details: None,
+        });
+    }
+    Ok(CommonResponse {
+        ok: true,
+        message: format!("已导出 {count} 个日志文件"),
+        details: None,
+    })
+}
+
+#[tauri::command]
+async fn export_program_data_zip(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    req: ExportProgramDataRequest,
+) -> Result<CommonResponse, String> {
+    validate_export_controller_session(&state, &req.controller_ip)?;
+    let default_name = "robot_data_export.zip".to_string();
+    let file_path = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        let default_name = default_name.clone();
+        move || {
+            app.dialog()
+                .file()
+                .add_filter("ZIP", &["zip"])
+                .set_file_name(&default_name)
+                .blocking_save_file()
+        }
+    })
+    .await
+    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+
+    let Some(fp) = file_path else {
+        return Ok(CommonResponse {
+            ok: false,
+            message: "已取消保存".into(),
+            details: None,
+        });
+    };
+    let zip_path = file_path_to_string(fp)?;
+    let host = req.controller_ip;
+    tauri::async_runtime::spawn_blocking(move || {
+        sftp_export::run_export_program_data(&host, std::path::Path::new(&zip_path))
+    })
+    .await
+    .map_err(|e| format!("导出任务失败: {e}"))??;
+
+    Ok(CommonResponse {
+        ok: true,
+        message: "导出完成".into(),
+        details: None,
+    })
+}
+
 // ---------- 入口 -----------------------------------------------------------
 
 pub fn run() {
@@ -812,6 +1033,9 @@ pub fn run() {
             apply_registers,
             export_preview_to_excel,
             export_template_excel,
+            export_controller_logs_zip,
+            export_teach_panel_logs_zip,
+            export_program_data_zip,
             open_devtools,
             get_log_dir
         ])
@@ -826,7 +1050,7 @@ pub fn run() {
             日志位置：%APPDATA%\\com.gbt.register.manager\\logs\\gbt-rs.log"
         );
         eprintln!("[GBT-RS] FATAL: {e}");
-        show_native_error("GBT Register Manager - 启动失败", &msg);
+        show_native_error("捷勃特机器人工具箱 - 启动失败", &msg);
         std::process::exit(1);
     }
 }

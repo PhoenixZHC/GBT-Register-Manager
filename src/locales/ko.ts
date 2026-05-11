@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "GBT 로봇 레지스터 관리 도구",
+    title: "Agilebot robot toolbox",
     model: "기종",
     software: "소프트웨어"
   },
@@ -56,8 +56,20 @@ export default {
   sidebar: {
     title: "기능 메뉴",
     batchCreate: "레지스터 일괄 생성",
-    dataExport: "데이터보내기",
-    dataImport: "데이터 가져오기"
+    dataExport: "레지스터 데이터보내기",
+    dataImport: "레지스터 데이터 가져오기",
+    logDataExport: "로그 / 프로그램 및 데이터보내기"
+  },
+  logExport: {
+    cardTitle: "로그 및 프로그램 데이터보내기",
+    pickDate: "로그 날짜(양력)",
+    hintProgramData: "프로그램 데이터보내기는 위 날짜를 사용하지 않습니다.",
+    exportControllerLogs: "컨트롤러 로그보내기",
+    exportTeachPanelLogs: "티치 펜던트 로그보내기",
+    exportProgramData: "프로그램 데이터보내기",
+    needConnectHint: "먼저 로봇에 연결하세요.",
+    noTeachIpHint: "티치 펜던트 IP가 비어 있어 펜던트 로그를보낼 수 없습니다.",
+    cancelledSave: "저장 취소됨"
   },
   create: {
     cardTitle: "레지스터 빠른 일괄 생성",
@@ -65,13 +77,13 @@ export default {
     running: "생성 중..."
   },
   export: {
-    title: "데이터보내기",
+    title: "레지스터 데이터보내기",
     readPreview: "로봇에서 읽고 미리보기",
     reading: "읽는 중...",
     toExcel: "Excel로보내기"
   },
   import: {
-    title: "데이터 가져오기",
+    title: "레지스터 데이터 가져오기",
     pickExcel: "Excel 가져오기 및 미리보기",
     downloadTemplate: "현재 유형 템플릿 다운로드",
     applyRobot: "로봇으로 가져오기",

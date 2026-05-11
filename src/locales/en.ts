@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "GBT Robot Register Manager",
+    title: "Agilebot robot toolbox",
     model: "Model",
     software: "Software"
   },
@@ -56,8 +56,20 @@ export default {
   sidebar: {
     title: "Features",
     batchCreate: "Batch create registers",
-    dataExport: "Data export",
-    dataImport: "Data import"
+    dataExport: "Register data export",
+    dataImport: "Register data import",
+    logDataExport: "Logs / programs & data export"
+  },
+  logExport: {
+    cardTitle: "Logs and program data export",
+    pickDate: "Log date (calendar)",
+    hintProgramData: "Program data export does not use the date above.",
+    exportControllerLogs: "Export controller logs",
+    exportTeachPanelLogs: "Export teach pendant logs",
+    exportProgramData: "Export program data",
+    needConnectHint: "Connect to the robot before exporting.",
+    noTeachIpHint: "Teach pendant IP is empty; cannot export pendant logs.",
+    cancelledSave: "Save cancelled"
   },
   create: {
     cardTitle: "Batch create registers",
@@ -65,13 +77,13 @@ export default {
     running: "Creating..."
   },
   export: {
-    title: "Data export",
+    title: "Register data export",
     readPreview: "Read from robot and preview",
     reading: "Reading...",
     toExcel: "Export to Excel"
   },
   import: {
-    title: "Data import",
+    title: "Register data import",
     pickExcel: "Import Excel and preview",
     downloadTemplate: "Download template for current type",
     applyRobot: "Import to robot",

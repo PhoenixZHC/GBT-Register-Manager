@@ -123,3 +123,42 @@ export async function getAppVersion(): Promise<string> {
 export async function fetchRobotMeta(): Promise<RobotMeta> {
   return traceInvoke("fetch_robot_meta", {}, () => invoke("fetch_robot_meta"));
 }
+
+export interface ExportControllerLogsRequest {
+  controllerIp: string;
+  dateYyyyMmDd: string;
+}
+
+export interface ExportTeachPanelLogsRequest {
+  controllerIp: string;
+  teachPanelIp: string;
+  dateYyyyMmDd: string;
+}
+
+export interface ExportProgramDataRequest {
+  controllerIp: string;
+}
+
+export async function exportControllerLogsZip(req: ExportControllerLogsRequest): Promise<CommonResponse> {
+  return traceInvoke(
+    "export_controller_logs_zip",
+    { req },
+    () => invoke("export_controller_logs_zip", { req })
+  );
+}
+
+export async function exportTeachPanelLogsZip(req: ExportTeachPanelLogsRequest): Promise<CommonResponse> {
+  return traceInvoke(
+    "export_teach_panel_logs_zip",
+    { req },
+    () => invoke("export_teach_panel_logs_zip", { req })
+  );
+}
+
+export async function exportProgramDataZip(req: ExportProgramDataRequest): Promise<CommonResponse> {
+  return traceInvoke(
+    "export_program_data_zip",
+    { req },
+    () => invoke("export_program_data_zip", { req })
+  );
+}

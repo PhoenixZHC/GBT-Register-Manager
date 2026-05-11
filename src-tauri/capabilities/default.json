@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/windows-schema.json",
   "identifier": "default",
-  "description": "GBT Register Manager 主窗口权限：IPC 命令 + 文件对话框",
+  "description": "捷勃特机器人工具箱主窗口：IPC 与文件对话框",
   "windows": [
     "main"
   ],

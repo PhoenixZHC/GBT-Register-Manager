@@ -6,6 +6,7 @@ import {
   NButton,
   NCard,
   NDataTable,
+  NDatePicker,
   NDropdown,
   NForm,
   NFormItem,
@@ -25,7 +26,10 @@ import {
   applyRegisters,
   connectRobot,
   disconnectRobot,
+  exportControllerLogsZip,
   exportPreviewToExcel,
+  exportProgramDataZip,
+  exportTeachPanelLogsZip,
   exportTemplate,
   fetchRobotMeta,
   getAppVersion,
@@ -35,7 +39,7 @@ import {
 import { expectedHeaders, parseExcelForPreview, ExcelUserError } from "./utils/excel";
 import { setStoredLocale, SUPPORTED_LOCALES, type AppLocale } from "./i18n";
 
-type FeatureKey = "batchCreate" | "dataImport" | "dataExport";
+type FeatureKey = "batchCreate" | "dataImport" | "dataExport" | "logDataExport";
 
 /** 调试入口：输入该 IP 并点连接，跳过真实机器人连接，仅用于界面与流程验证 */
 const DEBUG_BYPASS_IP = "255.255.255.255";
@@ -127,7 +131,7 @@ const connection = ref<ConnectionState>({ connected: false, ip: "", message: "" 
 const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
 const robotVersion = ref("");
-const DEFAULT_APP_VERSION = "1.0.2";
+const DEFAULT_APP_VERSION = "1.1.1";
 const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
@@ -245,8 +249,35 @@ const createCount = ref(10);
 const createDetails = ref<string[]>([]);
 const createLoading = ref(false);
 
+function startOfTodayMs(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** 日志/数据导出页：所选公历日的本地零点时间戳（供 NDatePicker）。 */
+const exportLogDate = ref<number | null>(startOfTodayMs());
+const logExportBusy = ref(false);
+
 const recentOptions = computed(() => recentIps.value.map((v) => ({ label: v, value: v })));
 const isConnected = computed(() => connection.value.connected);
+
+/** 调试或未连接时禁用 SFTP 导出。 */
+const logExportDisabled = computed(
+  () => !isConnected.value || connection.value.ip === DEBUG_BYPASS_IP
+);
+/** 无示教器 IP 时禁用示教器日志导出。 */
+const teachPanelLogDisabled = computed(
+  () => logExportDisabled.value || !(connection.value.teachPanelIp ?? "").trim()
+);
+
+function exportDateToYmd(ms: number): string {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 const ioColumns = computed<DataTableColumns<Record<string, unknown>>>(() =>
   expectedHeaders(ioType.value).map((key) => ({ title: key, key, ellipsis: { tooltip: true } }))
@@ -490,6 +521,67 @@ async function onExportTemplate() {
   }
 }
 
+function isExportSaveCancelled(resMessage: string): boolean {
+  return resMessage === "已取消保存";
+}
+
+async function onExportControllerLogsZip() {
+  if (logExportDisabled.value) return message.warning(t("messages.needConnect"));
+  const ts = exportLogDate.value;
+  if (ts == null) return message.warning(t("logExport.pickDate"));
+  logExportBusy.value = true;
+  try {
+    const res = await exportControllerLogsZip({
+      controllerIp: connection.value.ip,
+      dateYyyyMmDd: exportDateToYmd(ts)
+    });
+    if (isExportSaveCancelled(res.message)) return;
+    res.ok ? message.success(res.message) : message.error(res.message);
+  } catch (e) {
+    message.error(errMessage(e));
+  } finally {
+    logExportBusy.value = false;
+  }
+}
+
+async function onExportTeachPanelLogsZip() {
+  if (teachPanelLogDisabled.value) {
+    if (logExportDisabled.value) return message.warning(t("messages.needConnect"));
+    return message.warning(t("logExport.noTeachIpHint"));
+  }
+  const ts = exportLogDate.value;
+  if (ts == null) return message.warning(t("logExport.pickDate"));
+  const tp = (connection.value.teachPanelIp ?? "").trim();
+  logExportBusy.value = true;
+  try {
+    const res = await exportTeachPanelLogsZip({
+      controllerIp: connection.value.ip,
+      teachPanelIp: tp,
+      dateYyyyMmDd: exportDateToYmd(ts)
+    });
+    if (isExportSaveCancelled(res.message)) return;
+    res.ok ? message.success(res.message) : message.error(res.message);
+  } catch (e) {
+    message.error(errMessage(e));
+  } finally {
+    logExportBusy.value = false;
+  }
+}
+
+async function onExportProgramDataZip() {
+  if (logExportDisabled.value) return message.warning(t("messages.needConnect"));
+  logExportBusy.value = true;
+  try {
+    const res = await exportProgramDataZip({ controllerIp: connection.value.ip });
+    if (isExportSaveCancelled(res.message)) return;
+    res.ok ? message.success(res.message) : message.error(res.message);
+  } catch (e) {
+    message.error(errMessage(e));
+  } finally {
+    logExportBusy.value = false;
+  }
+}
+
 function buildCreateRows(start: number, count: number): Record<string, unknown>[] {
   const rows: Record<string, unknown>[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -678,6 +770,9 @@ onMounted(async () => {
             <button class="side-btn" :class="{ active: activeFeature === 'dataImport' }" @click="activeFeature = 'dataImport'">
               {{ t("sidebar.dataImport") }}
             </button>
+            <button class="side-btn" :class="{ active: activeFeature === 'logDataExport' }" @click="activeFeature = 'logDataExport'">
+              {{ t("sidebar.logDataExport") }}
+            </button>
           </aside>
 
           <section class="feature-area">
@@ -801,6 +896,51 @@ onMounted(async () => {
               </n-card>
               </div>
             </template>
+
+            <n-card
+              v-else-if="activeFeature === 'logDataExport'"
+              class="card-apple section-light"
+              :bordered="false"
+              size="medium"
+            >
+              <template #header>
+                <h2 class="section-title section-title--on-light">{{ t("logExport.cardTitle") }}</h2>
+              </template>
+              <n-alert v-if="logExportDisabled" type="warning" class="alert-block" :title="t('logExport.needConnectHint')" />
+              <n-alert v-else-if="teachPanelLogDisabled" type="info" class="alert-block" :title="t('logExport.noTeachIpHint')" />
+              <n-form label-placement="top" :show-feedback="false">
+                <n-form-item :label="t('logExport.pickDate')">
+                  <n-date-picker
+                    v-model:value="exportLogDate"
+                    type="date"
+                    :disabled="logExportBusy"
+                    clearable
+                    style="max-width: 280px"
+                  />
+                </n-form-item>
+              </n-form>
+              <p class="log-export-hint">{{ t("logExport.hintProgramData") }}</p>
+              <div class="toolbar-row toolbar-row--wrap">
+                <n-button
+                  type="primary"
+                  :disabled="logExportDisabled || logExportBusy || exportLogDate == null"
+                  :loading="logExportBusy"
+                  @click="onExportControllerLogsZip"
+                >
+                  {{ t("logExport.exportControllerLogs") }}
+                </n-button>
+                <n-button
+                  :disabled="teachPanelLogDisabled || logExportBusy || exportLogDate == null"
+                  :loading="logExportBusy"
+                  @click="onExportTeachPanelLogsZip"
+                >
+                  {{ t("logExport.exportTeachPanelLogs") }}
+                </n-button>
+                <n-button :disabled="logExportDisabled || logExportBusy" :loading="logExportBusy" @click="onExportProgramDataZip">
+                  {{ t("logExport.exportProgramData") }}
+                </n-button>
+              </div>
+            </n-card>
           </section>
         </div>
       </div>

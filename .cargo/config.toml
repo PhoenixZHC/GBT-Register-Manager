@@ -1,10 +1,14 @@
-# 缓解国内访问 crates.io 慢/超时：使用 rsproxy 稀疏索引。
-# 若你网络直连 crates.io 正常，可删除本文件或注释 [source.crates-io] 整段。
-[source.crates-io]
-replace-with = "rsproxy-sparse"
-
-[source.rsproxy-sparse]
-registry = "sparse+https://rsproxy.cn/index/"
+# 本文件不再覆盖 `crates-io`：Cargo 自带的 `crates-io` 已使用官方 sparse 索引，
+# 若再写 `replace-with` + `registry = "sparse+https://index.crates.io/"` 会与内置源重名报错。
+#
+# 若曾遇 rsproxy + 127.0.0.1:7890 代理失败，请检查用户级 `~/.cargo/config.toml` 是否仍把
+# `crates-io` 指到 rsproxy；需要国内镜像时，可仅在「用户配置」或本文件末尾自行添加
+# （且勿与下面已删除的重复 sparse 写法并存）：
+#
+# [source.crates-io]
+# replace-with = "rsproxy-sparse"
+# [source.rsproxy-sparse]
+# registry = "sparse+https://rsproxy.cn/index/"
 
 [net]
 retry = 5

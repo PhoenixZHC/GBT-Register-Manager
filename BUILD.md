@@ -1,8 +1,8 @@
-# GBT Register Manager — 构建说明
+# 捷勃特机器人工具箱（Agilebot robot toolbox）— 构建说明
 
 本文说明如何从源码在本机构建桌面应用（Tauri 2 + Vue 3 + Python Sidecar）。功能与使用说明见 [README.md](README.md)。
 
-当前版本：**v1.0.2**。构建产物为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。
+当前版本：**v1.1.1**。构建产物为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。
 
 ## 1. 环境与工具
 
@@ -15,7 +15,7 @@
 | **WiX Toolset 3.11** | 打 MSI 时 Tauri 会用到；本仓库通过脚本安装到 `%LOCALAPPDATA%\tauri\WixTools314`。 |
 | **NSIS** | 打 NSIS `-setup.exe` 时 Tauri 会用到；脚本会下载到 `%LOCALAPPDATA%\tauri\NSIS`。 |
 
-可选：若 `.cargo/config.toml` 中配置了国内 crates 镜像，可缓解 `cargo` 拉取依赖较慢的问题；网络正常时也可按需调整或删除该配置。
+本仓库根目录 [`.cargo/config.toml`](.cargo/config.toml) **不**再覆盖 `crates-io`（避免与 Cargo 内置官方源重复定义）；仅保留 `net` 重试与 MSVC 静态 CRT 等设置。若你曾在用户级 `~/.cargo/config.toml` 里把 `crates-io` 指到 **rsproxy**，而本机 `127.0.0.1:7890` 代理又不可用，仍可能拉依赖失败——可临时改回官方默认、修好代理，或在**当前终端**去掉代理再打包：`Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY -ErrorAction SilentlyContinue`。
 
 ## 2. 克隆仓库后首次准备
 
@@ -74,7 +74,7 @@ npm run tauri:build
 2. 运行 `scripts/prepare_tauri_tools.ps1`：确认 `%LOCALAPPDATA%\tauri\WixTools314\candle.exe` 与 NSIS 已就位（不存在则按提示先执行 `npm run tauri:download-wix-nsis`）。
 3. 执行 `beforeBuildCommand`：`npm run build`（`prebuild` 再跑一次清理 → `vue-tsc --noEmit` → `vite build` → 产物写入 `dist/`）。
 4. 执行 `cargo` 编译并调用 Tauri 打包 **MSI** 与 **NSIS**。
-5. 运行 `scripts/rename_bundles.ps1`：把 `_x64_xx-XX` 语言区域后缀从 MSI/NSIS 文件名里去掉，得到干净文件名（如 `GBTRegisterManager_1.0.2.msi`、`GBTRegisterManager_1.0.2-setup.exe`）。
+5. 运行 `scripts/rename_bundles.ps1`：把 `_x64_xx-XX` 语言区域后缀从 MSI/NSIS 文件名里去掉，得到干净文件名（如 `AgilebotRobotToolbox_1.1.1.msi`、`AgilebotRobotToolbox_1.1.1-setup.exe`）。
 
 **产物位置**（默认 release）：
 
@@ -160,7 +160,13 @@ A：安装 Visual Studio Build Tools，勾选「使用 C++ 的桌面开发」，
 A：十有八九是命中了第 9 节那个坑。执行 `npm run clean` 后重新 `npm run tauri:build`，再卸载旧版重装新 MSI/NSIS。
 
 **Q：`cargo` 偶发 `Access Denied (os error 5)`。**
-A：通常是 `src-tauri/target/` 被杀软/资源占用锁定。关闭运行中的旧 `GBTRegisterManager.exe`，或 `npm run clean -- --rust` 后重试。
+A：通常是 `src-tauri/target/` 被杀软/资源占用锁定。关闭运行中的旧 `AgilebotRobotToolbox.exe`（或旧版 `GBTRegisterManager.exe`），或 `npm run clean -- --rust` 后重试。
+
+**Q：`tauri build` / `cargo` 报 `Could not connect to server ... 127.0.0.1 port 7890`，或 `failed to query replaced source registry` / `rsproxy.cn`。**
+A：多为 **HTTP(S) 代理环境变量** 指向本机 **7890**，但 Clash / v2rayN 等未监听或未对命令行生效。处理顺序建议：① 确认代理已开且终端能访问 `127.0.0.1:7890`；② 检查用户级 `~/.cargo/config.toml` 是否把 `crates-io` 指到 rsproxy（与本仓库根目录 `.cargo/config.toml` 无关时仍会走镜像）；③ 仍失败时在**同一 PowerShell** 清除代理变量再编（见上文 `Remove-Item Env:HTTP_PROXY...`）。
+
+**Q：`source crates-io-sparse defines source registry crates-io, but that source is already defined`。**
+A：不能把 `replace-with` 再指向 `sparse+https://index.crates.io/`，会与 Cargo 内置 `crates-io` 冲突。本仓库 `.cargo/config.toml` 已去掉该写法；若你本地又加回类似配置，请删除 `replace-with` 整段，使用默认 `crates-io` 即可。
 
 ---
 

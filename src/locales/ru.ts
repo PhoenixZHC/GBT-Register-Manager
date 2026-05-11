@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "Менеджер регистров робота GBT",
+    title: "Agilebot robot toolbox",
     model: "Модель",
     software: "ПО"
   },
@@ -56,8 +56,20 @@ export default {
   sidebar: {
     title: "Меню",
     batchCreate: "Пакетное создание регистров",
-    dataExport: "Экспорт данных",
-    dataImport: "Импорт данных"
+    dataExport: "Экспорт данных регистров",
+    dataImport: "Импорт данных регистров",
+    logDataExport: "Журналы / программы и данные — экспорт"
+  },
+  logExport: {
+    cardTitle: "Экспорт журналов и данных программ",
+    pickDate: "Дата журнала (календарь)",
+    hintProgramData: "Экспорт данных программы не использует дату выше.",
+    exportControllerLogs: "Экспорт журналов контроллера",
+    exportTeachPanelLogs: "Экспорт журналов пульта обучения",
+    exportProgramData: "Экспорт данных программы",
+    needConnectHint: "Сначала подключитесь к роботу.",
+    noTeachIpHint: "IP пульта обучения пуст — экспорт журналов пульта недоступен.",
+    cancelledSave: "Сохранение отменено"
   },
   create: {
     cardTitle: "Быстрое пакетное создание регистров",
@@ -65,13 +77,13 @@ export default {
     running: "Создание..."
   },
   export: {
-    title: "Экспорт данных",
+    title: "Экспорт данных регистров",
     readPreview: "Считать с робота и предпросмотр",
     reading: "Чтение...",
     toExcel: "Экспорт в Excel"
   },
   import: {
-    title: "Импорт данных",
+    title: "Импорт данных регистров",
     pickExcel: "Импорт Excel и предпросмотр",
     downloadTemplate: "Скачать шаблон для текущего типа",
     applyRobot: "Импорт на робота",

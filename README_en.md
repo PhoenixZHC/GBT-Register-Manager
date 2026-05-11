@@ -1,4 +1,4 @@
-# GBT Register Manager
+# Agilebot robot toolbox
 
 <div align="right">
 
@@ -8,15 +8,13 @@
 
 ## Overview
 
-This application batch-operates **GBT (Agilebot)** robot **R**, **PR**, and **P** registers: read from the controller and export to Excel, import from Excel back to the robot, and batch-create registers.
+This desktop app is the **Agilebot** robot **toolbox**: after a successful controller connection, you can **batch-edit R, PR, and P registers** (Excel import/export, batch create) and, over **SFTP**, **export controller / teach-pendant logs by calendar date** and **export program data (`robot_data`)** from the cabinet—without manual WinSCP steps.
 
-Current app version: `v1.0.2`
+Current app version: `v1.1.1`
 
 ## Compatible SDK
 
-
-Agilebot Python SDK (GBT) | v2.0.1.0
-
+Agilebot Python SDK | v2.0.1.0
 
 ## Feature list
 
@@ -28,22 +26,29 @@ Agilebot Python SDK (GBT) | v2.0.1.0
 | **PR** | Pose register | — |
 | **P** | Program pose point | **Program name** |
 
-3. **Batch create**: Create registers of the selected type in a contiguous range by **start ID** and **count**; **P** requires a program name and is subject to **Limitations** below.
+2. **Batch create**: Create registers of the selected type in a contiguous range by **start ID** and **count**; **P** requires a program name and is subject to **Limitations** below.
 
-4. **Data export**: Read from the robot by **ID range** or **All**, preview in a table, and **export to Excel**. **All** reads sequentially from register **ID 1**; when **10 consecutive** reads fail, scanning stops and all successfully read records so far are returned (suited to data that is contiguous from ID 1).
+3. **Register data export**: Read from the robot by **ID range** or **All**, preview in a table, and **export to Excel**. **All** reads sequentially from register **ID 1**; when **10 consecutive** reads fail, scanning stops and all successfully read records so far are returned (suited to data that is contiguous from ID 1).
 
-5. **Data import**: **Import Excel**, preview, then **write to the robot**; if target IDs already exist, choose **overwrite**, **skip existing**, or **cancel**. **Export template** (headers only) is supported for offline editing.
+4. **Register data import**: **Import Excel**, preview, then **write to the robot**; if target IDs already exist, choose **overwrite**, **skip existing**, or **cancel**. **Export template** (headers only) is supported for offline editing.
+
+5. **Logs / programs & data export** (requires a **real** connection—not the debug bypass IP):
+   - **Export controller logs**: For the selected calendar date, collect pure timestamp files `YYYYMMDDHHmmss.log` under `/root/log`, and service `.log` files whose names contain the selected date under `/root/app_log`, then ZIP them together.
+   - **Export teach pendant logs**: For the selected calendar date, collect service `.log` files whose names contain the selected date under the pendant’s `/root/app_log` (requires **teach pendant IP** saved at connect time).
+   - **Export program data**: Recursively download `/root/robot_data` from the cabinet to a ZIP (date-independent).  
+   SFTP credentials are set in `src-tauri/src/sftp_export.rs` (controller and pendant passwords).
 
 6. **Languages**: Use the header switcher for **中文**, **English**, **日本語**, **한국어**, **Русский**.
 
 ## Typical workflow
 
 1. Open the app, enter the **controller cabinet IP** (optional **teach pendant IP**), and click **Connect** (the sidecar uses the SDK **local proxy** path for reliable access to **P** registers and related service ports).
-2. In the left sidebar, choose **Batch create**, **Data export**, or **Data import**.
-3. Select **R**, **P**, or **PR** first; for **P**, enter the **program name** wherever required.
-4. **Export only**: set a range or **All** → **Read from robot** → check the table → **Export to Excel** if needed.
+2. In the left sidebar, choose **Batch create**, **Register data export**, **Register data import**, or **Logs / programs & data export**.
+3. On register pages: select **R**, **P**, or **PR** first; for **P**, enter the **program name** wherever required.
+4. **Register table export only**: set a range or **All** → **Read from robot** → check the table → **Export to Excel** if needed.
 5. **Write from sheet**: **Import Excel** (or edit after read) → **Write to robot** → resolve conflicts if prompted.
-6. When finished, click **Disconnect** in the header.
+6. **Logs / programs & data**: On **Logs / programs & data export**, pick the date (for log exports) → click the desired button → choose the ZIP path in the save dialog.
+7. When finished, click **Disconnect** in the header.
 
 ## Excel layout
 
@@ -56,15 +61,35 @@ Agilebot Python SDK (GBT) | v2.0.1.0
 
 **PR** headers: `TYPE`, `ID`, `X`, `Y`, `Z`, `A`, `B`, `C`, `coord`  
 
-
 ## Limitations (read before production use)
 
 - **“Read all”:** There is no small fixed ID window. Scanning starts at **ID 1** in order; each failed read adds to a **consecutive failure** count (a successful read resets it). After **10 consecutive failures**, scanning stops and only earlier successful reads are kept. If register IDs are **not contiguous** and there are large gaps, the result may stop before the real maximum ID—use a **custom range** instead. To avoid overly long scans, the implementation also stops at an **ID ceiling of 100000**.
 
+- **`/root/app_log` date matching:** The selected calendar day is matched as an `YYYYMMDD` token inside the filename. The token must not be immediately adjacent to other digits on both sides, to avoid false positives (e.g. `service_202605111.log` is not treated as May 11).
+
+## Development & testing
+
+- From **`src-tauri`**, run: `cargo test -p gbt-register-manager sftp_export --lib` to re-check SFTP log filename rules for controller **`/root/log`** (pure timestamp) vs **`/root/app_log`** (service logs containing the date).
+
 ## Changelog
+
+### V1.1.1 (2026-05-11)
+
+- Version bumped to **1.1.1**.
+- **Docs:** Feature list now matches SFTP log filtering (`/root/log` vs `/root/app_log`); added development & testing notes.
+- **Automated tests:** `cargo test -p gbt-register-manager sftp_export --lib` passed (log filename matching).
+
+### V1.1.0 (2026-05-11)
+
+- Version bumped to **1.1.0**.
+- **UI & docs:** Sidebar and register pages use **Register data export / Register data import**; the SFTP area is **Logs / programs & data export**; the log export screen no longer shows the filename-pattern hint; README and BUILD notes updated.
+- **Logs and program-data export:** Controller `/root/log` keeps the pure timestamp filename rule; controller / teach-pendant `/root/app_log` supports service-name-plus-date filenames; program data is exported from `/root/robot_data`.
+- **Windows builds:** `ssh2` no longer uses `vendored-openssl` (no Perl / OpenSSL-from-source); libssh2 uses **WinCNG** on MSVC.
 
 ### V1.0.2 (2026-04-23)
 
+- Product renamed to **捷勃特机器人工具箱** / **Agilebot robot toolbox** (installer and window titles updated).
+- **Logs / data export:** After connect, ZIP export for controller and pendant logs by date, and full `robot_data` export from the cabinet (SFTP; see feature list).
 - Version bumped to **V1.0.2**.
 
 ### V1.0.1 (2026-04-23)

@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "GBT ロボットレジスタ管理ツール",
+    title: "Agilebot robot toolbox",
     model: "機種",
     software: "ソフト"
   },
@@ -56,8 +56,20 @@ export default {
   sidebar: {
     title: "メニュー",
     batchCreate: "レジスタ一括作成",
-    dataExport: "データエクスポート",
-    dataImport: "データインポート"
+    dataExport: "レジスタデータのエクスポート",
+    dataImport: "レジスタデータのインポート",
+    logDataExport: "ログ／プログラムとデータのエクスポート"
+  },
+  logExport: {
+    cardTitle: "ログとプログラムデータのエクスポート",
+    pickDate: "ログ日付（暦日）",
+    hintProgramData: "プログラムデータのエクスポートは上の日付を使いません。",
+    exportControllerLogs: "制御装置ログをエクスポート",
+    exportTeachPanelLogs: "ティーチペンダントログをエクスポート",
+    exportProgramData: "プログラムデータをエクスポート",
+    needConnectHint: "先にロボットに接続してください。",
+    noTeachIpHint: "ティーチペンダント IP が未入力のため、ペンダント側ログはエクスポートできません。",
+    cancelledSave: "保存をキャンセルしました"
   },
   create: {
     cardTitle: "レジスタの一括作成",
@@ -65,13 +77,13 @@ export default {
     running: "作成中..."
   },
   export: {
-    title: "データエクスポート",
+    title: "レジスタデータのエクスポート",
     readPreview: "ロボットから読み取り・プレビュー",
     reading: "読み取り中...",
     toExcel: "Excel にエクスポート"
   },
   import: {
-    title: "データインポート",
+    title: "レジスタデータのインポート",
     pickExcel: "Excel をインポートしてプレビュー",
     downloadTemplate: "現在の型のテンプレートを取得",
     applyRobot: "ロボットへインポート",
