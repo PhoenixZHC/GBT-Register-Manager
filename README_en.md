@@ -8,9 +8,9 @@
 
 ## Overview
 
-This desktop app is the **Agilebot** robot **toolbox**: after a successful controller connection, you can **batch-edit R, PR, and P registers** (Excel import/export, batch create) and, over **SFTP**, **export controller / teach-pendant logs by calendar date** and **export program data (`robot_data`)** from the cabinet—without manual WinSCP steps.
+This desktop app is the **Agilebot** robot **toolbox**: after a successful controller connection, you can **batch-edit R, PR, and P registers** (Excel import/export, batch create) and, over **SFTP**, **export controller / teach-pendant logs by calendar date** and **export program data (`robot_data`)** from the cabinet—without manual WinSCP steps. While connecting, a **Connecting…** message stays visible until the link is up and robot header info is loaded; the header can show **controller / teach pendant IPs**, **robot model**, and the **Agilebot.Robot.SDK.A** pip version on the cabinet (via SSH, same controller credentials as SFTP in `src-tauri/src/sftp_export.rs`). A **Plugin installation** page uploads **.gbtapp** packages and **.whl** wheels to the cabinet **Extension_Service (HTTP 5615)**.
 
-Current app version: `v1.1.1`
+Current app version: `v1.2.0`
 
 ## Compatible SDK
 
@@ -40,15 +40,20 @@ Agilebot Python SDK | v2.0.1.0
 
 6. **Languages**: Use the header switcher for **中文**, **English**, **日本語**, **한국어**, **Русский**.
 
+7. **Connection & header**: After **Connect**, a **Connecting…** message stays until the session is ready and model / SDK metadata is fetched. The header shows **controller IP**, **teach pendant IP** when provided at connect time, **model**, and the **`Agilebot.Robot.SDK.A`** **public** version (SSH: `cd /opt/python3.12/bin && ./pip3.12 list`; if the full version is `2.0.1.0+0998ac28…`, the UI shows **`2.0.1.0`** only—the part before **`+`**). For GBT-P/C/S with a teach pendant IP, the read targets the pendant. Requires TCP **22** to the host; credentials in `sftp_export.rs`. If SSH or pip fails, the SDK line may show **—** without blocking register operations.
+
+8. **Plugin installation** (requires a **real** connection—not the debug bypass IP): Pick a local **.gbtapp** or **.whl** and upload to the cabinet **Extension_Service** (default **HTTP 5615**). This PC must reach that port; not available in debug mode.
+
 ## Typical workflow
 
-1. Open the app, enter the **controller cabinet IP** (optional **teach pendant IP**), and click **Connect** (the sidecar uses the SDK **local proxy** path for reliable access to **P** registers and related service ports).
-2. In the left sidebar, choose **Batch create**, **Register data export**, **Register data import**, or **Logs / programs & data export**.
+1. Open the app, enter the **controller cabinet IP** (optional **teach pendant IP**), and click **Connect** (the sidecar uses the SDK **local proxy** path for reliable access to **P** registers and related service ports; **Connecting…** is shown until ready, then a success message).
+2. In the left sidebar, choose **Batch create**, **Register data export**, **Register data import**, **Logs / programs & data export**, or **Plugin installation**.
 3. On register pages: select **R**, **P**, or **PR** first; for **P**, enter the **program name** wherever required.
 4. **Register table export only**: set a range or **All** → **Read from robot** → check the table → **Export to Excel** if needed.
 5. **Write from sheet**: **Import Excel** (or edit after read) → **Write to robot** → resolve conflicts if prompted.
 6. **Logs / programs & data**: On **Logs / programs & data export**, pick the date (for log exports) → click the desired button → choose the ZIP path in the save dialog.
-7. When finished, click **Disconnect** in the header.
+7. **Plugin installation**: On **Plugin installation**, pick a local **.gbtapp** or **.whl** → run the matching **Install** action (this PC must reach cabinet **5615**).
+8. When finished, click **Disconnect** in the header.
 
 ## Excel layout
 
@@ -69,9 +74,32 @@ Agilebot Python SDK | v2.0.1.0
 
 ## Development & testing
 
+- **On-hardware verification:** Validated on a real controller / teach-pendant setup (register read/write and batch flows, Excel import/export, date-based log and `robot_data` export, `.gbtapp` / `.whl` plugin install).
 - From **`src-tauri`**, run: `cargo test -p gbt-register-manager sftp_export --lib` to re-check SFTP log filename rules for controller **`/root/log`** (pure timestamp) vs **`/root/app_log`** (service logs containing the date).
 
+## Building the Python sidecar
+
+- See **[BUILD.md](BUILD.md)** at the repo root. Release builds require `npm run sidecar:build` to produce `gbt-bridge-<target>.exe`.
+- The Agilebot SDK **wheel path in `python-sidecar/requirements.txt` is relative to the repository root** (`build_sidecar.ps1` runs `pip install -r python-sidecar/requirements.txt` from the root). Place the matching **`.whl`** under **`Python_v2.0.1.0/`** in the repo as named in `requirements.txt`, or edit that line for your environment.
+
 ## Changelog
+
+### V1.2.2 (2026-05-13)
+
+- Version bumped to **1.2.2**.
+- **On-hardware testing:** Passed on a real cabinet (connect + header info, registers, logs / program-data export, plugin install).
+
+### V1.2.1 (2026-05-13)
+
+- **SDK version:** Run `./pip3.12 list` under `/opt/python3.12/bin` over SSH and parse **`Agilebot.Robot.SDK.A`**; the header shows the **public** segment only (strip **`+`** and the local suffix).
+
+### V1.2.0 (2026-05-12)
+
+- Version bumped to **1.2.0**.
+- **Connection UX:** **Connecting…** stays visible until the link is ready and model / SDK metadata is loaded, then a success toast.
+- **Header:** Controller IP, optional teach pendant IP, model; **Python SDK** version over SSH (no legacy controller “software” line in the header).
+- **Plugin installation:** New **Plugin installation** sidebar entry; upload **.gbtapp** and **.whl** to cabinet Extension_Service (**HTTP 5615**).
+- **Build:** Fixed SDK wheel path in `python-sidecar/requirements.txt` to be relative to the **repo root** so `pip` run from the root no longer resolves `../` to the drive root. See [BUILD.md](BUILD.md).
 
 ### V1.1.1 (2026-05-11)
 

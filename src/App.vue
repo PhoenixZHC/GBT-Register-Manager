@@ -22,6 +22,7 @@ import {
 import type { DataTableColumns } from "naive-ui";
 import type { ConflictPolicy, ConnectionState, ReadMode, RegisterType } from "./types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   applyRegisters,
   connectRobot,
@@ -32,14 +33,17 @@ import {
   exportTeachPanelLogsZip,
   exportTemplate,
   fetchRobotMeta,
+  fetchRobotSdkVersion,
   getAppVersion,
   getConnectionStatus,
+  installRobotExtension,
+  installRobotWheel,
   readRegisters
 } from "./services/tauriApi";
 import { expectedHeaders, parseExcelForPreview, ExcelUserError } from "./utils/excel";
 import { setStoredLocale, SUPPORTED_LOCALES, type AppLocale } from "./i18n";
 
-type FeatureKey = "batchCreate" | "dataImport" | "dataExport" | "logDataExport";
+type FeatureKey = "batchCreate" | "dataImport" | "dataExport" | "logDataExport" | "pluginInstall";
 
 /** 调试入口：输入该 IP 并点连接，跳过真实机器人连接，仅用于界面与流程验证 */
 const DEBUG_BYPASS_IP = "255.255.255.255";
@@ -56,6 +60,18 @@ function isValidIPv4(ip: string): boolean {
   });
 }
 
+/** 与后端 IPC 错误码一致，供多语言映射。 */
+const UNSUPPORTED_ROBOT_MODEL_CODE = "GBT_UNSUPPORTED_ROBOT_MODEL";
+const PLUGIN_NEEDS_TEACH_PANEL_IP_CODE = "GBT_PLUGIN_NEEDS_TEACH_PANEL_IP";
+const PLUGIN_DEBUG_BYPASS_CODE = "GBT_PLUGIN_DEBUG_BYPASS";
+const PLUGIN_NO_EXT_FILE_CODE = "GBT_PLUGIN_NO_EXT_FILE";
+const PLUGIN_NO_WHL_FILE_CODE = "GBT_PLUGIN_NO_WHL_FILE";
+
+function ipcMessageIsCode(e: unknown, code: string): boolean {
+  const m = errMessage(e);
+  return m === code || m.includes(code);
+}
+
 /** 统一异常→message 兜底，避免 try/finally 中未捕获导致静默失败。 */
 function errMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -67,7 +83,20 @@ function errMessage(e: unknown): string {
   }
 }
 
+function isUnsupportedRobotModelError(e: unknown): boolean {
+  return ipcMessageIsCode(e, UNSUPPORTED_ROBOT_MODEL_CODE);
+}
+
 const { t, te, locale } = useI18n();
+
+function formatRobotModelOrConnectError(e: unknown): string {
+  if (isUnsupportedRobotModelError(e)) return t("messages.unsupportedRobotModel");
+  if (ipcMessageIsCode(e, PLUGIN_NEEDS_TEACH_PANEL_IP_CODE)) return t("pluginInstall.errorNeedsTeachPanelIp");
+  if (ipcMessageIsCode(e, PLUGIN_DEBUG_BYPASS_CODE)) return t("pluginInstall.errorDebugBypass");
+  if (ipcMessageIsCode(e, PLUGIN_NO_EXT_FILE_CODE)) return t("pluginInstall.errorNoExtFile");
+  if (ipcMessageIsCode(e, PLUGIN_NO_WHL_FILE_CODE)) return t("pluginInstall.errorNoWhlFile");
+  return errMessage(e);
+}
 
 const message = useMessage();
 const dialog = useDialog();
@@ -130,8 +159,9 @@ const recentPickerKey = ref(0);
 const connection = ref<ConnectionState>({ connected: false, ip: "", message: "" });
 const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
-const robotVersion = ref("");
-const DEFAULT_APP_VERSION = "1.1.1";
+/** 机器人侧 Agilebot.Robot.SDK.A 版本（SSH：`cd /opt/python3.12/bin && ./pip3.12 list`，展示为 `+` 前主版本）。 */
+const robotSdkVersion = ref("");
+const DEFAULT_APP_VERSION = "1.2.3";
 const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
@@ -259,6 +289,12 @@ function startOfTodayMs(): number {
 const exportLogDate = ref<number | null>(startOfTodayMs());
 const logExportBusy = ref(false);
 
+/** 插件安装：本机 .gbtapp / .whl 路径（由系统文件对话框选择）。 */
+const pluginExtLocalPath = ref("");
+const pluginWhlLocalPath = ref("");
+const pluginExtInstallBusy = ref(false);
+const pluginWhlInstallBusy = ref(false);
+
 const recentOptions = computed(() => recentIps.value.map((v) => ({ label: v, value: v })));
 const isConnected = computed(() => connection.value.connected);
 
@@ -270,6 +306,19 @@ const logExportDisabled = computed(
 const teachPanelLogDisabled = computed(
   () => logExportDisabled.value || !(connection.value.teachPanelIp ?? "").trim()
 );
+
+/** 标题栏示教器 IP（来自会话，与输入框可能不同步）。 */
+const teachPanelIpDisplay = computed(() => (connection.value.teachPanelIp ?? "").trim());
+
+/** GBT-P/C/S 且未填示教器 IP：不检测 SDK、禁用插件安装（S 可无示教器场景）。 */
+const pluginSeriesBlocksTeach = computed(() => {
+  if (!isConnected.value || connection.value.ip === DEBUG_BYPASS_IP) return false;
+  const m = robotModel.value.trim().toUpperCase();
+  if (!m) return false;
+  const isPcs = m.includes("GBT-P") || m.includes("GBT-C") || m.includes("GBT-S");
+  if (!isPcs) return false;
+  return !(connection.value.teachPanelIp ?? "").trim();
+});
 
 function exportDateToYmd(ms: number): string {
   const d = new Date(ms);
@@ -307,20 +356,31 @@ async function refreshConnection() {
   connection.value = await getConnectionStatus();
   if (!connection.value.connected || connection.value.ip === DEBUG_BYPASS_IP) {
     robotModel.value = "";
-    robotVersion.value = "";
+    robotSdkVersion.value = "";
   } else {
-    await loadRobotMeta();
+    try {
+      await loadRobotHeader();
+    } catch (e) {
+      message.error(formatRobotModelOrConnectError(e) || t("messages.connectFailed"));
+      connection.value = await getConnectionStatus();
+      robotModel.value = "";
+      robotSdkVersion.value = "";
+    }
   }
 }
 
-async function loadRobotMeta() {
-  try {
-    const meta = await fetchRobotMeta();
-    robotModel.value = meta.model?.trim() || "";
-    robotVersion.value = meta.controllerVersion?.trim() || "";
-  } catch {
-    robotModel.value = "";
-    robotVersion.value = "";
+async function loadRobotHeader() {
+  robotModel.value = "";
+  robotSdkVersion.value = "";
+  const meta = await fetchRobotMeta();
+  robotModel.value = meta.model?.trim() || "";
+  const tp = (connection.value.teachPanelIp ?? "").trim();
+  const m = robotModel.value.toUpperCase();
+  const isPcs = m.includes("GBT-P") || m.includes("GBT-C") || m.includes("GBT-S");
+  if (isPcs && !tp) {
+    robotSdkVersion.value = "";
+  } else {
+    robotSdkVersion.value = (await fetchRobotSdkVersion(robotModel.value || null)).trim();
   }
 }
 
@@ -341,7 +401,9 @@ async function onConnect() {
     return;
   }
   loading.value = true;
+  let connectLoadingReactive: { destroy: () => void } | undefined;
   try {
+    connectLoadingReactive = message.loading(t("messages.connecting"), { duration: 0 });
     connection.value = await connectRobot({
       controllerIp: trimmed,
       teachPanelIp: tpTrimmed || undefined,
@@ -354,19 +416,24 @@ async function onConnect() {
       }
       if (trimmed === DEBUG_BYPASS_IP) {
         robotModel.value = "";
-        robotVersion.value = "";
+        robotSdkVersion.value = "";
+        message.success(t("messages.connectDebug"));
       } else {
-        await loadRobotMeta();
+        try {
+          await loadRobotHeader();
+          message.success(t("messages.connectSuccess"));
+        } catch (e) {
+          connection.value = await getConnectionStatus();
+          message.error(formatRobotModelOrConnectError(e) || t("messages.connectFailed"));
+        }
       }
-      message.success(
-        trimmed === DEBUG_BYPASS_IP ? t("messages.connectDebug") : t("messages.connectSuccess")
-      );
     } else {
       message.error(connection.value.message || t("messages.connectFailed"));
     }
   } catch (e) {
-    message.error(errMessage(e) || t("messages.connectFailed"));
+    message.error(formatRobotModelOrConnectError(e) || t("messages.connectFailed"));
   } finally {
+    connectLoadingReactive?.destroy();
     loading.value = false;
   }
 }
@@ -377,7 +444,7 @@ async function onDisconnect() {
     const res = await disconnectRobot();
     message.info(res.message);
     robotModel.value = "";
-    robotVersion.value = "";
+    robotSdkVersion.value = "";
     await refreshConnection();
   } catch (e) {
     message.error(errMessage(e));
@@ -582,6 +649,65 @@ async function onExportProgramDataZip() {
   }
 }
 
+async function onPickPluginExtensionFile() {
+  try {
+    const sel = await open({
+      multiple: false,
+      filters: [{ name: "GBT Plugin", extensions: ["gbtapp"] }]
+    });
+    if (sel === null) return;
+    if (typeof sel === "string") pluginExtLocalPath.value = sel;
+    else if (Array.isArray(sel) && sel[0]) pluginExtLocalPath.value = sel[0];
+  } catch (e) {
+    message.error(errMessage(e));
+  }
+}
+
+async function onPickPluginWhlFile() {
+  try {
+    const sel = await open({
+      multiple: false,
+      filters: [{ name: "Python Wheel", extensions: ["whl"] }]
+    });
+    if (sel === null) return;
+    if (typeof sel === "string") pluginWhlLocalPath.value = sel;
+    else if (Array.isArray(sel) && sel[0]) pluginWhlLocalPath.value = sel[0];
+  } catch (e) {
+    message.error(errMessage(e));
+  }
+}
+
+async function onInstallPluginExtension() {
+  if (!isConnected.value) return message.warning(t("messages.needConnect"));
+  if (connection.value.ip === DEBUG_BYPASS_IP) return message.warning(t("pluginInstall.errorDebugBypass"));
+  if (!pluginExtLocalPath.value.trim()) return message.warning(t("pluginInstall.noExtFile"));
+  pluginExtInstallBusy.value = true;
+  try {
+    const info = await installRobotExtension(pluginExtLocalPath.value.trim(), robotModel.value || null);
+    message.success(t("pluginInstall.extSuccess", { name: info.name || "—", version: info.version || "—" }));
+  } catch (e) {
+    message.error(formatRobotModelOrConnectError(e));
+  } finally {
+    pluginExtInstallBusy.value = false;
+  }
+}
+
+async function onInstallPluginWhl() {
+  if (!isConnected.value) return message.warning(t("messages.needConnect"));
+  if (connection.value.ip === DEBUG_BYPASS_IP) return message.warning(t("pluginInstall.errorDebugBypass"));
+  if (!pluginWhlLocalPath.value.trim()) return message.warning(t("pluginInstall.noWhlFile"));
+  pluginWhlInstallBusy.value = true;
+  try {
+    const res = await installRobotWheel(pluginWhlLocalPath.value.trim(), robotModel.value || null);
+    if (res.ok) message.success(res.message || t("pluginInstall.whlSuccess"));
+    else message.error(res.message);
+  } catch (e) {
+    message.error(formatRobotModelOrConnectError(e));
+  } finally {
+    pluginWhlInstallBusy.value = false;
+  }
+}
+
 function buildCreateRows(start: number, count: number): Record<string, unknown>[] {
   const rows: Record<string, unknown>[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -707,15 +833,36 @@ onMounted(async () => {
     <header class="top-nav">
       <div class="top-nav-left">
         <template v-if="isConnected">
-          <span class="top-nav-meta-ip">{{ connection.ip }}</span>
-          <span class="top-nav-meta-sep" aria-hidden="true">|</span>
-          <span>{{ t("app.model") }} {{ robotModel || "—" }}</span>
-          <span class="top-nav-meta-sep" aria-hidden="true">|</span>
-          <span>{{ t("app.software") }} {{ robotVersion || "—" }}</span>
-          <span class="top-nav-meta-sep" aria-hidden="true">|</span>
-          <button type="button" class="disconnect-link" :disabled="loading" @click="onDisconnect">
-            {{ t("connect.disconnect") }}
-          </button>
+          <div class="top-nav-header-meta" role="status">
+            <div class="top-nav-header-col top-nav-header-col--ip">
+              <div class="top-nav-header-line">
+                <span class="top-nav-header-label">{{ t("app.controllerIp") }}</span>
+                <span class="top-nav-header-value">{{ connection.ip }}</span>
+              </div>
+              <div v-if="teachPanelIpDisplay" class="top-nav-header-line">
+                <span class="top-nav-header-label">{{ t("app.teachPanelIp") }}</span>
+                <span class="top-nav-header-value">{{ teachPanelIpDisplay }}</span>
+              </div>
+            </div>
+            <span class="top-nav-meta-sep" aria-hidden="true">|</span>
+            <div class="top-nav-header-col">
+              <div class="top-nav-header-line">
+                <span class="top-nav-header-label">{{ t("app.model") }}</span>
+                <span class="top-nav-header-value">{{ robotModel || "—" }}</span>
+              </div>
+            </div>
+            <span class="top-nav-meta-sep" aria-hidden="true">|</span>
+            <div class="top-nav-header-col">
+              <div class="top-nav-header-line">
+                <span class="top-nav-header-label">{{ t("app.robotSdk") }}</span>
+                <span class="top-nav-header-value top-nav-header-value--sdk">{{ robotSdkVersion || "—" }}</span>
+              </div>
+            </div>
+            <span class="top-nav-meta-sep" aria-hidden="true">|</span>
+            <button type="button" class="disconnect-link" :disabled="loading" @click="onDisconnect">
+              {{ t("connect.disconnect") }}
+            </button>
+          </div>
         </template>
       </div>
       <div class="top-nav-title">{{ t("app.title") }}</div>
@@ -772,6 +919,9 @@ onMounted(async () => {
             </button>
             <button class="side-btn" :class="{ active: activeFeature === 'logDataExport' }" @click="activeFeature = 'logDataExport'">
               {{ t("sidebar.logDataExport") }}
+            </button>
+            <button class="side-btn" :class="{ active: activeFeature === 'pluginInstall' }" @click="activeFeature = 'pluginInstall'">
+              {{ t("sidebar.pluginInstall") }}
             </button>
           </aside>
 
@@ -939,6 +1089,64 @@ onMounted(async () => {
                 <n-button :disabled="logExportDisabled || logExportBusy" :loading="logExportBusy" @click="onExportProgramDataZip">
                   {{ t("logExport.exportProgramData") }}
                 </n-button>
+              </div>
+            </n-card>
+
+            <n-card
+              v-else-if="activeFeature === 'pluginInstall'"
+              class="card-apple section-light"
+              :bordered="false"
+              size="medium"
+            >
+              <template #header>
+                <h2 class="section-title section-title--on-light">{{ t("pluginInstall.title") }}</h2>
+              </template>
+              <n-alert v-if="pluginSeriesBlocksTeach" type="warning" class="alert-block" :title="t('pluginInstall.seriesNeedsTeachPanel')" />
+              <div class="plugin-install-stack">
+                <n-form label-placement="top" :show-feedback="false">
+                  <n-form-item :label="t('pluginInstall.extPathLabel')">
+                    <n-input
+                      v-model:value="pluginExtLocalPath"
+                      type="textarea"
+                      :autosize="{ minRows: 1, maxRows: 3 }"
+                      readonly
+                      :placeholder="t('pluginInstall.extPathPlaceholder')"
+                    />
+                  </n-form-item>
+                  <div class="toolbar-row">
+                    <n-button :disabled="pluginExtInstallBusy" @click="onPickPluginExtensionFile">{{ t("pluginInstall.pickExt") }}</n-button>
+                    <n-button
+                      type="primary"
+                      :disabled="loading || pluginExtInstallBusy || pluginSeriesBlocksTeach"
+                      :loading="pluginExtInstallBusy"
+                      @click="onInstallPluginExtension"
+                    >
+                      {{ t("pluginInstall.installExt") }}
+                    </n-button>
+                  </div>
+                </n-form>
+                <n-form label-placement="top" :show-feedback="false">
+                  <n-form-item :label="t('pluginInstall.whlPathLabel')">
+                    <n-input
+                      v-model:value="pluginWhlLocalPath"
+                      type="textarea"
+                      :autosize="{ minRows: 1, maxRows: 3 }"
+                      readonly
+                      :placeholder="t('pluginInstall.whlPathPlaceholder')"
+                    />
+                  </n-form-item>
+                  <div class="toolbar-row">
+                    <n-button :disabled="pluginWhlInstallBusy" @click="onPickPluginWhlFile">{{ t("pluginInstall.pickWhl") }}</n-button>
+                    <n-button
+                      type="primary"
+                      :disabled="loading || pluginWhlInstallBusy || pluginSeriesBlocksTeach"
+                      :loading="pluginWhlInstallBusy"
+                      @click="onInstallPluginWhl"
+                    >
+                      {{ t("pluginInstall.installWhl") }}
+                    </n-button>
+                  </div>
+                </n-form>
               </div>
             </n-card>
           </section>

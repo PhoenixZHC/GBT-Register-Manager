@@ -2,7 +2,10 @@ export default {
   app: {
     title: "捷勃特机器人工具箱",
     model: "机型",
-    software: "软件"
+    software: "软件",
+    controllerIp: "控制柜：",
+    teachPanelIp: "示教器：",
+    robotSdk: "SDK："
   },
   errors: {
     appRuntime: "应用运行出现异常，请查看控制台日志。"
@@ -22,8 +25,11 @@ export default {
     invalidIp: "请输入合法的 IPv4 地址（如 192.168.1.100）。",
     invalidTeachPanelIp: "示教器 IP 格式不合法，请输入合法 IPv4 或留空。",
     connectSuccess: "机器人连接成功。",
+    connecting: "连接中…",
     connectDebug: "已进入调试模式（未连接真实机器人）。",
     connectFailed: "连接失败。",
+    unsupportedRobotModel:
+      "无法识别机器人机型（须为 GBT-P / GBT-C / GBT-S 系列），已断开连接。请核对机型或联系技术支持。",
     needConnect: "请先连接机器人。",
     pReadNeedProgram: "P 点读取必须填写程序名。",
     readDone: "读取完成，共 {total} 条。",
@@ -58,7 +64,30 @@ export default {
     batchCreate: "批量新建寄存器",
     dataExport: "寄存器数据导出",
     dataImport: "寄存器数据导入",
-    logDataExport: "日志/程序与数据导出"
+    logDataExport: "日志/程序与数据导出",
+    pluginInstall: "插件安装"
+  },
+  pluginInstall: {
+    title: "插件安装",
+    seriesNeedsTeachPanel:
+      "GBT-P / GBT-C 与 GBT-S 机型下，未填写示教器 IP 时无法检测 SDK、无法安装插件与依赖。请在首页连接处填写示教器 IP 后重新连接。",
+    errorNeedsTeachPanelIp:
+      "GBT-P / GBT-C / GBT-S 须通过示教器安装插件与依赖。请在首页连接处填写示教器 IP 后重新连接。",
+    errorDebugBypass: "调试模式不支持向机器人安装插件或依赖。",
+    errorNoExtFile: "未选择插件文件。",
+    errorNoWhlFile: "未选择依赖文件。",
+    extPathLabel: "插件包路径（.gbtapp）",
+    extPathPlaceholder: "点击下方「选择插件文件」",
+    whlPathLabel: "依赖包路径（.whl）",
+    whlPathPlaceholder: "点击下方「选择依赖文件」",
+    pickExt: "选择插件文件",
+    pickWhl: "选择依赖文件",
+    installExt: "安装插件",
+    installWhl: "安装依赖",
+    noExtFile: "请先选择插件文件。",
+    noWhlFile: "请先选择依赖文件（.whl）。",
+    extSuccess: "插件安装成功：{name}（版本 {version}）",
+    whlSuccess: "依赖（wheel）安装完成。",
   },
   logExport: {
     cardTitle: "日志与程序数据导出",

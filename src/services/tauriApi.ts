@@ -4,6 +4,7 @@ import type {
   CommonResponse,
   ConnectionState,
   ConnectRequest,
+  ExtensionInfo,
   ReadRequest,
   RegisterType,
   RobotMeta
@@ -122,6 +123,31 @@ export async function getAppVersion(): Promise<string> {
 
 export async function fetchRobotMeta(): Promise<RobotMeta> {
   return traceInvoke("fetch_robot_meta", {}, () => invoke("fetch_robot_meta"));
+}
+
+/** 通过 SSH 执行 `pip3.12 list` 解析 Agilebot.Robot.SDK.A 版本（展示为 `+` 前主版本）；P/C/S 在填写示教器 IP 时走示教器，否则由后端返回空串。 */
+export async function fetchRobotSdkVersion(modelHint?: string | null): Promise<string> {
+  return traceInvoke("fetch_robot_sdk_version", { modelHint }, () =>
+    invoke("fetch_robot_sdk_version", { modelHint: modelHint?.trim() || null })
+  );
+}
+
+export async function installRobotExtension(localPath: string, modelHint?: string | null): Promise<ExtensionInfo> {
+  return traceInvoke("install_robot_extension", { localPath, modelHint }, () =>
+    invoke("install_robot_extension", {
+      localPath,
+      modelHint: modelHint?.trim() || null
+    })
+  );
+}
+
+export async function installRobotWheel(localPath: string, modelHint?: string | null): Promise<CommonResponse> {
+  return traceInvoke("install_robot_wheel", { localPath, modelHint }, () =>
+    invoke("install_robot_wheel", {
+      localPath,
+      modelHint: modelHint?.trim() || null
+    })
+  );
 }
 
 export interface ExportControllerLogsRequest {

@@ -2,12 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
+mod extension_install;
 mod sftp_export;
 
 #[cfg(windows)]
@@ -66,7 +67,7 @@ fn rotate_if_needed(path: &PathBuf) {
     }
 }
 
-fn gbt_log(msg: &str) {
+pub(crate) fn gbt_log(msg: &str) {
     eprintln!("[GBT-RS] {msg}");
     let _ = std::io::stderr().flush();
     if let Some(path) = LOG_FILE.get() {
@@ -171,6 +172,17 @@ fn lock_connection<'a>(
         .connection
         .lock()
         .map_err(|e| format!("连接状态锁异常，请重启应用：{e}"))
+}
+
+/// 与 `disconnect_robot` 一致：清空会话（机型不支援等场景由后端主动断开）。
+fn local_disconnect(state: &State<'_, AppState>) -> Result<(), String> {
+    let mut conn = lock_connection(state)?;
+    conn.connected = false;
+    conn.ip.clear();
+    conn.teach_panel_ip.clear();
+    conn.local_proxy = false;
+    conn.message = "已断开连接".to_string();
+    Ok(())
 }
 
 /// 把已连接状态序列化成 sidecar payload 所需的连接字段（camelCase）。
@@ -389,6 +401,115 @@ async fn run_python_action_async(payload: Value) -> Result<Value, String> {
         .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
+// ---------- 机型与 SDK / Extension_Service 目标主机 -------------------------
+
+/// 前端用 `t('messages.unsupportedRobotModel')` 展示；勿改为多行或带空格。
+const GBT_UNSUPPORTED_ROBOT_MODEL: &str = "GBT_UNSUPPORTED_ROBOT_MODEL";
+/// 插件 / wheel 安装须配置示教器 IP（GBT-P/C/S）。
+const GBT_PLUGIN_NEEDS_TEACH_PANEL_IP: &str = "GBT_PLUGIN_NEEDS_TEACH_PANEL_IP";
+const GBT_PLUGIN_DEBUG_BYPASS: &str = "GBT_PLUGIN_DEBUG_BYPASS";
+const GBT_PLUGIN_NO_EXT_FILE: &str = "GBT_PLUGIN_NO_EXT_FILE";
+const GBT_PLUGIN_NO_WHL_FILE: &str = "GBT_PLUGIN_NO_WHL_FILE";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GbtSeries {
+    /// GBT-S：可无示教器；无示教器 IP 时不检测 SDK、不使用插件安装。
+    S,
+    /// GBT-P / GBT-C：插件环境与 SDK 检测目标在示教器。
+    Pc,
+}
+
+fn parse_gbt_series(model: &str) -> Result<GbtSeries, String> {
+    let u = model.trim().to_ascii_uppercase();
+    if u.is_empty() {
+        return Err(GBT_UNSUPPORTED_ROBOT_MODEL.to_string());
+    }
+    if u.contains("GBT-P") || u.contains("GBT-C") {
+        return Ok(GbtSeries::Pc);
+    }
+    if u.contains("GBT-S") {
+        return Ok(GbtSeries::S);
+    }
+    Err(GBT_UNSUPPORTED_ROBOT_MODEL.to_string())
+}
+
+/// P/C/S：已配置示教器则经示教器 SSH；未填示教器则不做 pip 检测（返回 None）。
+fn resolve_pip_sdk_ssh_target(series: GbtSeries, conn: &ConnectionState) -> Option<(String, String)> {
+    let tp = conn.teach_panel_ip.trim();
+    match series {
+        GbtSeries::Pc | GbtSeries::S => {
+            if tp.is_empty() {
+                None
+            } else {
+                Some((
+                    tp.to_string(),
+                    sftp_export::SFTP_PASSWORD_TEACH_PANEL.to_string(),
+                ))
+            }
+        }
+    }
+}
+
+fn resolve_extension_http_host(model: &str, conn: &ConnectionState) -> Result<String, String> {
+    let series = parse_gbt_series(model)?;
+    let tp = conn.teach_panel_ip.trim();
+    match series {
+        GbtSeries::Pc | GbtSeries::S => {
+            if tp.is_empty() {
+                Err(GBT_PLUGIN_NEEDS_TEACH_PANEL_IP.to_string())
+            } else {
+                Ok(tp.to_string())
+            }
+        }
+    }
+}
+
+async fn fetch_robot_model_for_conn(conn: &ConnectionState) -> Result<String, String> {
+    if !conn.connected {
+        return Err("请先连接机器人".into());
+    }
+    if conn.ip == DEBUG_BYPASS_IP {
+        return Ok(String::new());
+    }
+    let mut payload_map = connection_payload_fields(conn);
+    payload_map.insert("action".into(), Value::String("fetch_robot_meta".into()));
+    let v = run_python_action_async(Value::Object(payload_map)).await?;
+    Ok(v
+        .get("model")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string())
+}
+
+async fn fetch_robot_model_value(state: &State<'_, AppState>) -> Result<String, String> {
+    let conn = lock_connection(state)?.clone();
+    fetch_robot_model_for_conn(&conn).await
+}
+
+async fn resolve_model_for_sdk_commands(
+    state: &State<'_, AppState>,
+    model_hint: Option<String>,
+) -> Result<String, String> {
+    if let Some(m) = model_hint {
+        let t = m.trim().to_string();
+        if !t.is_empty() {
+            return Ok(t);
+        }
+    }
+    fetch_robot_model_value(state).await
+}
+
+fn validate_extension_install_basics(conn: &ConnectionState) -> Result<(), String> {
+    if !conn.connected {
+        return Err("请先连接机器人".into());
+    }
+    if conn.ip == DEBUG_BYPASS_IP {
+        return Err(GBT_PLUGIN_DEBUG_BYPASS.to_string());
+    }
+    Ok(())
+}
+
 // ---------- IPC Commands --------------------------------------------------
 
 #[tauri::command]
@@ -433,19 +554,152 @@ async fn fetch_robot_meta(state: State<'_, AppState>) -> Result<RobotMeta, Strin
             .get("model")
             .and_then(|x| x.as_str())
             .unwrap_or("")
+            .trim()
             .to_string(),
         controller_version: v
             .get("controllerVersion")
             .and_then(|x| x.as_str())
             .unwrap_or("")
+            .trim()
             .to_string(),
     };
+    if let Err(e) = parse_gbt_series(&meta.model) {
+        gbt_log(&format!(
+            "fetch_robot_meta unsupported_model disconnect model={:?}",
+            meta.model
+        ));
+        local_disconnect(&state)?;
+        return Err(e);
+    }
     gbt_log(&format!(
         "fetch_robot_meta ok model_len={} ver_len={}",
         meta.model.len(),
         meta.controller_version.len()
     ));
     Ok(meta)
+}
+
+#[tauri::command]
+async fn fetch_robot_sdk_version(
+    state: State<'_, AppState>,
+    model_hint: Option<String>,
+) -> Result<String, String> {
+    gbt_log("fetch_robot_sdk_version begin");
+    let conn = lock_connection(&state)?.clone();
+    if !conn.connected {
+        gbt_log("fetch_robot_sdk_version abort: not connected");
+        return Err("请先连接机器人".to_string());
+    }
+    if conn.ip == DEBUG_BYPASS_IP {
+        gbt_log("fetch_robot_sdk_version debug_bypass empty");
+        return Ok(String::new());
+    }
+    let model = resolve_model_for_sdk_commands(&state, model_hint).await?;
+    let series = match parse_gbt_series(&model) {
+        Ok(s) => s,
+        Err(e) => {
+            gbt_log("fetch_robot_sdk_version bad_model disconnect");
+            local_disconnect(&state)?;
+            return Err(e);
+        }
+    };
+    let Some((host, password)) = resolve_pip_sdk_ssh_target(series, &conn) else {
+        gbt_log("fetch_robot_sdk_version skip: P/C/S without teach panel");
+        return Ok(String::new());
+    };
+    let inner = tauri::async_runtime::spawn_blocking(move || {
+        sftp_export::fetch_agilebot_sdk_version(&host, &password)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?;
+    match &inner {
+        Ok(v) => gbt_log(&format!("fetch_robot_sdk_version ok len={}", v.len())),
+        Err(e) => gbt_log(&format!("fetch_robot_sdk_version err {e}")),
+    }
+    inner
+}
+
+#[tauri::command]
+async fn install_robot_extension(
+    state: State<'_, AppState>,
+    local_path: String,
+    model_hint: Option<String>,
+) -> Result<extension_install::ExtensionInfo, String> {
+    gbt_log("install_robot_extension begin");
+    let conn = lock_connection(&state)?.clone();
+    validate_extension_install_basics(&conn)?;
+    let trimmed = local_path.trim();
+    if trimmed.is_empty() {
+        return Err(GBT_PLUGIN_NO_EXT_FILE.to_string());
+    }
+    let path = Path::new(trimmed);
+    if !path.is_file() {
+        return Err(format!("文件不存在或不可读: {}", path.display()));
+    }
+    let display_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("plugin.gbtapp")
+        .to_string();
+    let model = resolve_model_for_sdk_commands(&state, model_hint).await?;
+    let host = resolve_extension_http_host(&model, &conn).map_err(|e| {
+        if e == GBT_UNSUPPORTED_ROBOT_MODEL {
+            let _ = local_disconnect(&state);
+        }
+        e
+    })?;
+    let client = extension_install::Extension::new(&host).map_err(|e| format!("{e:#}"))?;
+    let info = client
+        .install_extension(path, &display_name)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    gbt_log(&format!(
+        "install_robot_extension ok name={} version={}",
+        info.name, info.version
+    ));
+    Ok(info)
+}
+
+#[tauri::command]
+async fn install_robot_wheel(
+    state: State<'_, AppState>,
+    local_path: String,
+    model_hint: Option<String>,
+) -> Result<CommonResponse, String> {
+    gbt_log("install_robot_wheel begin");
+    let conn = lock_connection(&state)?.clone();
+    validate_extension_install_basics(&conn)?;
+    let trimmed = local_path.trim();
+    if trimmed.is_empty() {
+        return Err(GBT_PLUGIN_NO_WHL_FILE.to_string());
+    }
+    let path = Path::new(trimmed);
+    if !path.is_file() {
+        return Err(format!("文件不存在或不可读: {}", path.display()));
+    }
+    let display_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("package.whl")
+        .to_string();
+    let model = resolve_model_for_sdk_commands(&state, model_hint).await?;
+    let host = resolve_extension_http_host(&model, &conn).map_err(|e| {
+        if e == GBT_UNSUPPORTED_ROBOT_MODEL {
+            let _ = local_disconnect(&state);
+        }
+        e
+    })?;
+    let client = extension_install::Extension::new(&host).map_err(|e| format!("{e:#}"))?;
+    client
+        .install_wheel(path, &display_name)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    gbt_log("install_robot_wheel ok");
+    Ok(CommonResponse {
+        ok: true,
+        message: String::new(),
+        details: None,
+    })
 }
 
 #[tauri::command]
@@ -553,12 +807,7 @@ fn get_connection_status(state: State<AppState>) -> Result<ConnectionState, Stri
 #[tauri::command]
 fn disconnect_robot(state: State<AppState>) -> Result<CommonResponse, String> {
     gbt_log("disconnect_robot");
-    let mut conn = lock_connection(&state)?;
-    conn.connected = false;
-    conn.ip.clear();
-    conn.teach_panel_ip.clear();
-    conn.local_proxy = false;
-    conn.message = "已断开连接".to_string();
+    local_disconnect(&state)?;
     Ok(CommonResponse {
         ok: true,
         message: "已断开连接".to_string(),
@@ -1029,6 +1278,9 @@ pub fn run() {
             disconnect_robot,
             get_app_version,
             fetch_robot_meta,
+            fetch_robot_sdk_version,
+            install_robot_extension,
+            install_robot_wheel,
             read_registers,
             apply_registers,
             export_preview_to_excel,

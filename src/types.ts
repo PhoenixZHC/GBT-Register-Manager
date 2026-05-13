@@ -85,3 +85,18 @@ export interface RobotMeta {
   model: string;
   controllerVersion: string;
 }
+
+/** Extension_Service 安装插件成功后返回的插件信息（camelCase，与 Tauri 一致）。 */
+export interface ExtensionInfo {
+  name: string;
+  author: string;
+  kind: string;
+  scriptLang: string;
+  description: string;
+  version: string;
+  contact: string;
+  copyright: string;
+  license: string;
+  entry: string;
+  url: string;
+}

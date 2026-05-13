@@ -2,7 +2,10 @@ export default {
   app: {
     title: "Agilebot robot toolbox",
     model: "Model",
-    software: "Software"
+    software: "Software",
+    controllerIp: "Controller:",
+    teachPanelIp: "Teach pendant:",
+    robotSdk: "SDK:"
   },
   errors: {
     appRuntime: "The application encountered an error. Please check the console log."
@@ -22,8 +25,11 @@ export default {
     invalidIp: "Please enter a valid IPv4 address (e.g. 192.168.1.100).",
     invalidTeachPanelIp: "Teach pendant IP is invalid. Enter a valid IPv4 or leave it blank.",
     connectSuccess: "Connected to the robot successfully.",
+    connecting: "Connecting…",
     connectDebug: "Debug mode (no real robot connection).",
     connectFailed: "Connection failed.",
+    unsupportedRobotModel:
+      "Unrecognized robot model (must be GBT-P, GBT-C, or GBT-S). The session has been disconnected. Verify the model or contact support.",
     needConnect: "Please connect to the robot first.",
     pReadNeedProgram: "Program name is required to read P registers.",
     readDone: "Read finished: {total} record(s).",
@@ -58,7 +64,30 @@ export default {
     batchCreate: "Batch create registers",
     dataExport: "Register data export",
     dataImport: "Register data import",
-    logDataExport: "Logs / programs & data export"
+    logDataExport: "Logs / programs & data export",
+    pluginInstall: "Plugin installation"
+  },
+  pluginInstall: {
+    title: "Plugin installation",
+    seriesNeedsTeachPanel:
+      "For GBT-P / GBT-C / GBT-S, SDK detection and plugin/wheel install require a teach pendant IP. Enter it on the home connection screen and reconnect.",
+    errorNeedsTeachPanelIp:
+      "GBT-P / GBT-C / GBT-S require a teach pendant IP to install plugins or wheels. Enter it on the home connection screen and reconnect.",
+    errorDebugBypass: "Debug mode cannot install plugins or dependencies on the robot.",
+    errorNoExtFile: "No plugin file was selected.",
+    errorNoWhlFile: "No dependency (.whl) file was selected.",
+    extPathLabel: "Plugin package path (.gbtapp)",
+    extPathPlaceholder: "Use “Choose plugin file” below",
+    whlPathLabel: "Dependency path (.whl)",
+    whlPathPlaceholder: "Use “Choose dependency file” below",
+    pickExt: "Choose plugin file",
+    pickWhl: "Choose dependency file",
+    installExt: "Install plugin",
+    installWhl: "Install dependency",
+    noExtFile: "Please choose a plugin file first.",
+    noWhlFile: "Please choose a .whl file first.",
+    extSuccess: "Plugin installed: {name} (version {version})",
+    whlSuccess: "Wheel dependency installation finished.",
   },
   logExport: {
     cardTitle: "Logs and program data export",

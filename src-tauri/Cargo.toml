@@ -1,6 +1,6 @@
 [package]
 name = "gbt-register-manager"
-version = "1.1.1"
+version = "1.2.3"
 description = "Agilebot robot toolbox — 捷勃特机器人工具箱"
 authors = ["Agilebot"]
 edition = "2021"
@@ -24,6 +24,9 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 chrono = "0.4"
 tempfile = "3"
 walkdir = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+anyhow = "1"
+url = "2"
 
 [profile.release]
 # 缩小安装包体积并启用 LTO，代价是编译时间。

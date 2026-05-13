@@ -2,7 +2,10 @@ export default {
   app: {
     title: "Agilebot robot toolbox",
     model: "機種",
-    software: "ソフト"
+    software: "ソフト",
+    controllerIp: "制御装置：",
+    teachPanelIp: "ティーチ：",
+    robotSdk: "SDK："
   },
   errors: {
     appRuntime: "アプリケーションでエラーが発生しました。コンソールログを確認してください。"
@@ -22,8 +25,11 @@ export default {
     invalidIp: "有効な IPv4 アドレスを入力してください（例：192.168.1.100）。",
     invalidTeachPanelIp: "ティーチペンダントの IP が不正です。有効な IPv4 を入力するか空欄にしてください。",
     connectSuccess: "ロボットに接続しました。",
+    connecting: "接続中…",
     connectDebug: "デバッグモードです（実機は接続されていません）。",
     connectFailed: "接続に失敗しました。",
+    unsupportedRobotModel:
+      "ロボット機種を認識できません（GBT-P / GBT-C / GBT-S のみ）。接続を切断しました。機種を確認するかサポートに連絡してください。",
     needConnect: "先にロボットに接続してください。",
     pReadNeedProgram: "P レジスタの読み取りにはプログラム名が必要です。",
     readDone: "読み取り完了：{total} 件。",
@@ -58,7 +64,30 @@ export default {
     batchCreate: "レジスタ一括作成",
     dataExport: "レジスタデータのエクスポート",
     dataImport: "レジスタデータのインポート",
-    logDataExport: "ログ／プログラムとデータのエクスポート"
+    logDataExport: "ログ／プログラムとデータのエクスポート",
+    pluginInstall: "プラグインインストール"
+  },
+  pluginInstall: {
+    title: "プラグインインストール",
+    seriesNeedsTeachPanel:
+      "GBT-P / GBT-C / GBT-S では、ティーチペンダントの IP がないと SDK 検出やプラグイン／依存のインストールができません。接続画面で IP を入力し直してください。",
+    errorNeedsTeachPanelIp:
+      "GBT-P / GBT-C / GBT-S ではティーチペンダントの IP がないとプラグイン／wheel をインストールできません。接続画面で IP を入力し直してください。",
+    errorDebugBypass: "デバッグモードではロボットへのプラグイン／依存のインストールはできません。",
+    errorNoExtFile: "プラグインファイルが選択されていません。",
+    errorNoWhlFile: "依存ファイル（.whl）が選択されていません。",
+    extPathLabel: "プラグインパス（.gbtapp）",
+    extPathPlaceholder: "下の「プラグインファイルを選択」を使用",
+    whlPathLabel: "依存パッケージパス（.whl）",
+    whlPathPlaceholder: "下の「依存ファイルを選択」を使用",
+    pickExt: "プラグインファイルを選択",
+    pickWhl: "依存ファイルを選択",
+    installExt: "プラグインをインストール",
+    installWhl: "依存をインストール",
+    noExtFile: "先にプラグインファイルを選択してください。",
+    noWhlFile: "先に .whl ファイルを選択してください。",
+    extSuccess: "プラグインをインストールしました：{name}（バージョン {version}）",
+    whlSuccess: "wheel のインストールが完了しました。",
   },
   logExport: {
     cardTitle: "ログとプログラムデータのエクスポート",

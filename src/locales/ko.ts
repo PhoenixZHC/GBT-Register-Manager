@@ -2,7 +2,10 @@ export default {
   app: {
     title: "Agilebot robot toolbox",
     model: "기종",
-    software: "소프트웨어"
+    software: "소프트웨어",
+    controllerIp: "제어기:",
+    teachPanelIp: "티치:",
+    robotSdk: "SDK:"
   },
   errors: {
     appRuntime: "애플리케이션 오류가 발생했습니다. 콘솔 로그를 확인하세요."
@@ -22,8 +25,11 @@ export default {
     invalidIp: "올바른 IPv4 주소를 입력하세요 (예: 192.168.1.100).",
     invalidTeachPanelIp: "티치 펜던트 IP 형식이 올바르지 않습니다. 올바른 IPv4를 입력하거나 비워 두세요.",
     connectSuccess: "로봇에 연결되었습니다.",
+    connecting: "연결 중…",
     connectDebug: "디버그 모드입니다(실제 로봇 미연결).",
     connectFailed: "연결에 실패했습니다.",
+    unsupportedRobotModel:
+      "로봇 기종을 인식할 수 없습니다(GBT-P / GBT-C / GBT-S만 지원). 연결이 끊겼습니다. 기종을 확인하거나 지원팀에 문의하세요.",
     needConnect: "먼저 로봇에 연결하세요.",
     pReadNeedProgram: "P 레지스터 읽기에는 프로그램 이름이 필요합니다.",
     readDone: "읽기 완료: {total}건.",
@@ -58,7 +64,30 @@ export default {
     batchCreate: "레지스터 일괄 생성",
     dataExport: "레지스터 데이터보내기",
     dataImport: "레지스터 데이터 가져오기",
-    logDataExport: "로그 / 프로그램 및 데이터보내기"
+    logDataExport: "로그 / 프로그램 및 데이터보내기",
+    pluginInstall: "플러그인 설치"
+  },
+  pluginInstall: {
+    title: "플러그인 설치",
+    seriesNeedsTeachPanel:
+      "GBT-P / GBT-C / GBT-S에서는 티치 펜던트 IP가 없으면 SDK 확인 및 플러그인·의존성 설치를 할 수 없습니다. 연결 화면에서 IP를 입력한 뒤 다시 연결하세요.",
+    errorNeedsTeachPanelIp:
+      "GBT-P / GBT-C / GBT-S에서는 티치 펜던트 IP가 없으면 플러그인·wheel을 설치할 수 없습니다. 연결 화면에서 IP를 입력한 뒤 다시 연결하세요.",
+    errorDebugBypass: "디버그 모드에서는 로봇에 플러그인이나 의존성을 설치할 수 없습니다.",
+    errorNoExtFile: "플러그인 파일이 선택되지 않았습니다.",
+    errorNoWhlFile: "의존 파일(.whl)이 선택되지 않았습니다.",
+    extPathLabel: "플러그인 경로(.gbtapp)",
+    extPathPlaceholder: "아래「플러그인 파일 선택」을 사용하세요",
+    whlPathLabel: "의존성 경로(.whl)",
+    whlPathPlaceholder: "아래「의존 파일 선택」을 사용하세요",
+    pickExt: "플러그인 파일 선택",
+    pickWhl: "의존 파일 선택",
+    installExt: "플러그인 설치",
+    installWhl: "의존성 설치",
+    noExtFile: "먼저 플러그인 파일을 선택하세요.",
+    noWhlFile: "먼저 .whl 파일을 선택하세요.",
+    extSuccess: "플러그인 설치 완료: {name} (버전 {version})",
+    whlSuccess: "wheel 설치가 완료되었습니다.",
   },
   logExport: {
     cardTitle: "로그 및 프로그램 데이터보내기",
