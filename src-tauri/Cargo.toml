@@ -1,7 +1,7 @@
 [package]
 name = "gbt-register-manager"
-version = "1.2.3"
-description = "Agilebot robot toolbox — 捷勃特机器人工具箱"
+version = "1.2.8"
+description = "Agilebot robot toolbox"
 authors = ["Agilebot"]
 edition = "2021"
 
@@ -15,10 +15,9 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2.10", features = ["devtools"] }
+tauri = { version = "2.10", default-features = false, features = ["wry"] }
 tauri-plugin-dialog = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-# 勿启用 vendored-openssl（需 Perl 从源码编 OpenSSL）。Windows MSVC 走 WinCNG。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 ssh2 = "0.9"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 chrono = "0.4"
@@ -28,9 +27,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 anyhow = "1"
 url = "2"
 
+[features]
+default = []
+devtools = ["tauri/devtools"]
+
 [profile.release]
-# 缩小安装包体积并启用 LTO，代价是编译时间。
-codegen-units = 1
 lto = true
 opt-level = "s"
 panic = "abort"

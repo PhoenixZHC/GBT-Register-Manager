@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "Agilebot robot toolbox",
+    title: "제보트 로봇 도구함",
     model: "기종",
     software: "소프트웨어",
     controllerIp: "제어기:",
@@ -8,7 +8,28 @@ export default {
     robotSdk: "SDK:"
   },
   errors: {
-    appRuntime: "애플리케이션 오류가 발생했습니다. 콘솔 로그를 확인하세요."
+    appRuntime: "애플리케이션 오류가 발생했습니다. 콘솔 로그를 확인하세요.",
+    GBT_CONNECTION_LOCK_ERROR: "앱 상태가 비정상입니다. 다시 시작하세요.",
+    GBT_ROBOT_OP_BUSY: "다른 작업이 진행 중입니다. 잠시 후 다시 시도하세요.",
+    GBT_NOT_CONNECTED: "먼저 로봇에 연결하세요.",
+    GBT_EMPTY_CONTROLLER_IP: "컨트롤러 IP를 입력하세요.",
+    GBT_META_READ_FAILED: "로봇 기종 정보를 읽을 수 없습니다. 연결과 SDK를 확인하세요.",
+    GBT_DEBUG_EXPORT_BLOCKED: "디버그 모드에서는 로그 및 프로그램 데이터를 보낼 수 없습니다.",
+    GBT_SESSION_MISMATCH: "연결 정보가 현재 세션과 일치하지 않습니다. 다시 연결하세요.",
+    GBT_TEACH_PANEL_IP_REQUIRED: "티치 펜던트 IP가 설정되지 않았습니다.",
+    GBT_INVALID_EXPORT_DATE: "날짜 형식은 YYYY-MM-DD 여야 합니다.",
+    GBT_INTERNAL_ERROR: "작업에 실패했습니다. 로그를 확인하세요.",
+    GBT_CONNECT_FAILED: "연결에 실패했습니다. IP와 네트워크를 확인하세요.",
+    GBT_PROGRAM_NOT_FOUND: "프로그램을 찾을 수 없습니다. 프로그램 이름을 확인하세요.",
+    GBT_FILE_NOT_READABLE: "선택한 파일이 없거나 읽을 수 없습니다.",
+    GBT_P_READ_NEED_PROGRAM: "P 레지스터 읽기에는 프로그램 이름이 필요합니다.",
+    GBT_P_WRITE_NEED_PROGRAM: "P 레지스터 쓰기 전에 프로그램 이름이 필요합니다.",
+    GBT_P_SERVICE_UNREACHABLE: "P 레지스터 서비스에 연결할 수 없습니다. 컨트롤러 포트 5606과 네트워크를 확인하세요.",
+    GBT_UNSUPPORTED_REGISTER_TYPE: "지원하지 않는 레지스터 유형입니다.",
+    GBT_OPENPYXL_MISSING: "openpyxl이 설치되지 않아 Excel을 처리할 수 없습니다.",
+    GBT_SDK_NOT_FOUND: "Agilebot Python SDK를 찾을 수 없습니다.",
+    GBT_SIDECAR_MISSING: "로봇 통신 구성 요소를 찾을 수 없습니다. 앱을 다시 설치하세요.",
+    GBT_EXTENSION_INSTALL_FAILED: "플러그인 또는 의존성 설치에 실패했습니다. 로그를 확인하세요."
   },
   conflict: {
     title: "레지스터 충돌",
@@ -28,6 +49,7 @@ export default {
     connecting: "연결 중…",
     connectDebug: "디버그 모드입니다(실제 로봇 미연결).",
     connectFailed: "연결에 실패했습니다.",
+    disconnected: "연결이 해제되었습니다.",
     unsupportedRobotModel:
       "로봇 기종을 인식할 수 없습니다(GBT-P / GBT-C / GBT-S만 지원). 연결이 끊겼습니다. 기종을 확인하거나 지원팀에 문의하세요.",
     needConnect: "먼저 로봇에 연결하세요.",
@@ -39,6 +61,8 @@ export default {
     pWriteNeedProgram: "P 레지스터 쓰기 전에 프로그램 이름이 필요합니다.",
     noValidRegIds: "미리보기 데이터에 유효한 레지스터 ID가 없습니다.",
     importCancelled: "가져오기가 취소되었습니다.",
+    applyDone: "완료: 성공 {success}, 건너뜀 {skipped}, 실패 {failed}.",
+    applyFailed: "쓰기가 모두 완료되지 않았습니다: 성공 {success}, 건너뜀 {skipped}, 실패 {failed}.",
     countPositive: "개수는 0보다 커야 합니다.",
     pCreateNeedProgram: "P 레지스터 생성 전에 프로그램 이름이 필요합니다.",
     createCancelled: "일괄 생성이 취소되었습니다."
@@ -82,6 +106,8 @@ export default {
     whlPathPlaceholder: "아래「의존 파일 선택」을 사용하세요",
     pickExt: "플러그인 파일 선택",
     pickWhl: "의존 파일 선택",
+    fileFilterExt: "GBT 플러그인(.gbtapp)",
+    fileFilterWhl: "Python 의존 패키지(.whl)",
     installExt: "플러그인 설치",
     installWhl: "의존성 설치",
     noExtFile: "먼저 플러그인 파일을 선택하세요.",
@@ -133,5 +159,28 @@ export default {
   },
   lang: {
     switcherTitle: "표시 언어 변경"
+  },
+  response: {
+    disconnected: "연결이 해제되었습니다.",
+    save_cancelled: "저장이 취소되었습니다.",
+    export_saved: "Excel 파일을보냈습니다.",
+    template_saved: "템플릿을보냈습니다.",
+    logs_exported: "로그 파일 {count}개를보냈습니다.",
+    no_logs: "선택한 날짜의 로그를 찾을 수 없습니다.",
+    program_data_exported: "프로그램 데이터를 내보냈습니다 ({count}개).",
+    wheel_installed: "wheel 설치가 완료되었습니다.",
+    operation_failed: "작업에 실패했습니다.",
+    write_skipped_debug: "디버그 모드: 쓰기를 건너뛰었습니다."
+  },
+  progress: {
+    readStarting: "읽는 중...",
+    writeStarting: "쓰는 중...",
+    read: "읽는 중 {current}/{total}, 일치 {matched}건.",
+    readAll: "ID {current} 읽는 중, 일치 {matched}건.",
+    write: "쓰는 중 {current}/{total}, 완료 {matched}건.",
+    exportStarting: "보내기 준비 중, 대상 파일 검색 중...",
+    exportScan: "검색 완료: 보낼 파일 {total}개",
+    exportDownload: "보내는 중 {current}/{total}, 완료 {matched}개",
+    exportZip: "ZIP 생성 중..."
   }
 };

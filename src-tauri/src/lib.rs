@@ -1,12 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use tauri::{Manager, State};
+use std::thread;
+use tauri::{Emitter, Manager, State, Wry};
 use tauri_plugin_dialog::{DialogExt, FilePath};
+
+type AppHandle = tauri::AppHandle<Wry>;
+type WebviewWindow = tauri::WebviewWindow<Wry>;
 
 mod extension_install;
 mod sftp_export;
@@ -90,9 +95,11 @@ fn chrono_like_now() -> String {
 
 // ---------- State ----------------------------------------------------------
 
-#[derive(Default)]
 struct AppState {
     connection: Mutex<ConnectionState>,
+    /// 串行化连接、断开与寄存器读写，避免并发操作同一机器人会话。
+    robot_op: tokio::sync::Mutex<()>,
+    next_session_id: AtomicU64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -107,6 +114,9 @@ struct ConnectionState {
     /// 是否让 SDK 在本机启动代理服务（无 TP 或旧软件时需 true）。
     #[serde(default)]
     local_proxy: bool,
+    /// 每次成功连接递增；断开置 0。进度事件与读写请求须携带并校验此 ID。
+    #[serde(default)]
+    session_id: u64,
     message: String,
 }
 
@@ -137,6 +147,10 @@ struct ReadRequest {
     register_type: String,
     program_name: Option<String>,
     selector: Selector,
+    #[serde(default)]
+    progress_op_id: Option<u64>,
+    #[serde(default)]
+    session_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +160,18 @@ struct ApplyRequest {
     program_name: Option<String>,
     conflict_policy: String,
     rows: Vec<Value>,
+    #[serde(default)]
+    progress_op_id: Option<u64>,
+    #[serde(default)]
+    session_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyStats {
+    success: u64,
+    skipped: u64,
+    failed: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,7 +179,13 @@ struct CommonResponse {
     ok: bool,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stats: Option<ApplyStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,7 +203,40 @@ fn lock_connection<'a>(
     state
         .connection
         .lock()
-        .map_err(|e| format!("连接状态锁异常，请重启应用：{e}"))
+        .map_err(|e| {
+            gbt_log(&format!("connection mutex poisoned: {e}"));
+            GBT_CONNECTION_LOCK_ERROR.to_string()
+        })
+}
+
+async fn try_acquire_robot_op(state: &AppState) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+    state
+        .robot_op
+        .try_lock()
+        .map_err(|_| GBT_ROBOT_OP_BUSY.to_string())
+}
+
+fn try_acquire_robot_op_blocking(state: &AppState) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+    state
+        .robot_op
+        .try_lock()
+        .map_err(|_| GBT_ROBOT_OP_BUSY.to_string())
+}
+
+fn assign_connection_session(state: &AppState, conn: &mut ConnectionState) {
+    let id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
+    conn.session_id = if id == 0 { 1 } else { id };
+}
+
+/// 校验请求携带的 sessionId 与当前连接一致。
+fn require_robot_session(conn: &ConnectionState, req_session_id: Option<u64>) -> Result<(), String> {
+    if !conn.connected || conn.session_id == 0 {
+        return Err(GBT_NOT_CONNECTED.to_string());
+    }
+    match req_session_id {
+        Some(id) if id == conn.session_id => Ok(()),
+        _ => Err(GBT_SESSION_MISMATCH.to_string()),
+    }
 }
 
 /// 与 `disconnect_robot` 一致：清空会话（机型不支援等场景由后端主动断开）。
@@ -181,7 +246,8 @@ fn local_disconnect(state: &State<'_, AppState>) -> Result<(), String> {
     conn.ip.clear();
     conn.teach_panel_ip.clear();
     conn.local_proxy = false;
-    conn.message = "已断开连接".to_string();
+    conn.session_id = 0;
+    conn.message = String::new();
     Ok(())
 }
 
@@ -206,20 +272,17 @@ fn connection_payload_fields(conn: &ConnectionState) -> serde_json::Map<String, 
 fn friendly_python_error(raw: &str) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
-        return "Python sidecar 崩溃且无输出，请查看日志。".into();
-    }
-    // 精简：取最后一行非空，避免整段 traceback 暴给用户
-    let last = raw
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or(raw)
-        .trim();
-    if last.len() > 280 {
-        format!("{}…（详情见日志）", &last[..280])
+        gbt_log("python sidecar crashed with no stderr");
     } else {
-        last.to_string()
+        let last = raw
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or(raw)
+            .trim();
+        gbt_log(&format!("python sidecar stderr: {last}"));
     }
+    GBT_INTERNAL_ERROR.to_string()
 }
 
 // ---------- sidecar 调用 ---------------------------------------------------
@@ -246,7 +309,7 @@ fn resolve_sidecar() -> Result<Sidecar, String> {
         if script.is_file() {
             let cwd = script
                 .parent()
-                .ok_or_else(|| "bridge.py 路径无效".to_string())?
+                .ok_or_else(|| internal_ipc_err("bridge.py path invalid"))?
                 .to_path_buf();
             return Ok(Sidecar::DevScript {
                 python: "python".into(),
@@ -257,10 +320,10 @@ fn resolve_sidecar() -> Result<Sidecar, String> {
     }
 
     // 发布期：可执行文件与主程序同目录（Tauri externalBin 规则）
-    let exe = std::env::current_exe().map_err(|e| format!("定位主程序失败: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| internal_ipc_err(&format!("current_exe: {e}")))?;
     let dir = exe
         .parent()
-        .ok_or_else(|| "无法解析主程序目录".to_string())?;
+        .ok_or_else(|| internal_ipc_err("current_exe has no parent"))?;
     let name = if cfg!(windows) {
         "gbt-bridge.exe"
     } else {
@@ -277,10 +340,11 @@ fn resolve_sidecar() -> Result<Sidecar, String> {
         return Ok(Sidecar::FrozenExe { exe: alt });
     }
 
-    Err(format!(
-        "找不到 sidecar 可执行文件（{}）。请确认安装包完整，或开发期确认 python-sidecar/bridge.py 存在。",
+    gbt_log(&format!(
+        "resolve_sidecar missing exe={}",
         candidate.display()
-    ))
+    ));
+    Err(GBT_SIDECAR_MISSING.to_string())
 }
 
 fn build_sidecar_command(sidecar: &Sidecar) -> Command {
@@ -305,6 +369,7 @@ fn build_sidecar_command(sidecar: &Sidecar) -> Command {
     };
     cmd.env("PYTHONUTF8", "1");
     cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("PYTHONUNBUFFERED", "1");
     if let Some(dir) = LOG_DIR.get() {
         cmd.env("GBT_LOG_DIR", dir);
     }
@@ -320,16 +385,16 @@ fn extract_frame(stdout: &[u8]) -> Result<Value, String> {
     if s.starts_with(&[0xEF, 0xBB, 0xBF]) {
         s = &s[3..];
     }
-    let text = std::str::from_utf8(s).map_err(|e| format!("Python 输出不是有效 UTF-8: {e}"))?;
+    let text = std::str::from_utf8(s).map_err(|e| internal_ipc_err(&format!("python stdout utf8: {e}")))?;
     let begin = text
         .find(FRAME_BEGIN)
-        .ok_or_else(|| "Python 输出缺少 <<<GBT-BEGIN>>> 标记，可能已崩溃。".to_string())?;
+        .ok_or_else(|| internal_ipc_err("python stdout missing GBT-BEGIN frame"))?;
     let rest = &text[begin + FRAME_BEGIN.len()..];
     let end = rest
         .find(FRAME_END)
-        .ok_or_else(|| "Python 输出缺少 <<<GBT-END>>> 标记，可能已被截断。".to_string())?;
+        .ok_or_else(|| internal_ipc_err("python stdout missing GBT-END frame"))?;
     let body = rest[..end].trim();
-    serde_json::from_str::<Value>(body).map_err(|e| format!("解析 Python 输出 JSON 失败: {e}"))
+    serde_json::from_str::<Value>(body).map_err(|e| internal_ipc_err(&format!("python frame json: {e}")))
 }
 
 fn run_python_action(payload: Value) -> Result<Value, String> {
@@ -346,8 +411,7 @@ fn run_python_action(payload: Value) -> Result<Value, String> {
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| {
-        gbt_log(&format!("python spawn failed action={action} err={e}"));
-        format!("启动 Python sidecar 失败: {e}")
+        internal_ipc_err(&format!("python spawn action={action} err={e}"))
     })?;
 
     // 通过 stdin 传入 JSON，避免 Windows 命令行 32K 长度限制
@@ -355,17 +419,17 @@ fn run_python_action(payload: Value) -> Result<Value, String> {
         let stdin = child
             .stdin
             .as_mut()
-            .ok_or_else(|| "无法打开 sidecar stdin".to_string())?;
+            .ok_or_else(|| internal_ipc_err("sidecar stdin unavailable"))?;
         let payload_bytes =
-            serde_json::to_vec(&payload).map_err(|e| format!("序列化 payload 失败: {e}"))?;
+            serde_json::to_vec(&payload).map_err(|e| internal_ipc_err(&format!("serialize payload: {e}")))?;
         stdin
             .write_all(&payload_bytes)
-            .map_err(|e| format!("写入 sidecar stdin 失败: {e}"))?;
+            .map_err(|e| internal_ipc_err(&format!("write sidecar stdin: {e}")))?;
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| format!("等待 sidecar 退出失败: {e}"))?;
+        .map_err(|e| internal_ipc_err(&format!("wait sidecar: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -394,14 +458,211 @@ fn run_python_action(payload: Value) -> Result<Value, String> {
     Ok(parsed)
 }
 
+fn parse_protocol_frame(body: &str) -> Result<Value, String> {
+    serde_json::from_str::<Value>(body.trim()).map_err(|e| internal_ipc_err(&format!("protocol frame json: {e}")))
+}
+
+fn emit_export_progress(
+    window: &WebviewWindow,
+    progress_op_id: Option<u64>,
+    session_id: u64,
+    phase: &str,
+    current: usize,
+    total: usize,
+    done: usize,
+) {
+    let mut value = serde_json::json!({
+        "kind": "progress",
+        "action": "export",
+        "phase": phase,
+        "current": current,
+        "total": total,
+        "matched": done,
+    });
+    attach_progress_meta(&mut value, progress_op_id, session_id);
+    let _ = window.emit("register-progress", value);
+}
+
+fn attach_progress_meta(value: &mut Value, progress_op_id: Option<u64>, session_id: u64) {
+    if let Some(obj) = value.as_object_mut() {
+        if session_id > 0 {
+            obj.insert("sessionId".into(), Value::from(session_id));
+        }
+        if let Some(id) = progress_op_id {
+            obj.insert("opId".into(), Value::from(id));
+        }
+    }
+}
+
+fn attach_progress_op_id(value: Value, progress_op_id: Option<u64>, session_id: u64) -> Value {
+    let mut value = value;
+    attach_progress_meta(&mut value, progress_op_id, session_id);
+    value
+}
+
+fn handle_stream_frame(
+    window: &WebviewWindow,
+    body: &str,
+    progress_op_id: Option<u64>,
+    session_id: u64,
+) -> Result<Option<Value>, String> {
+    let value = parse_protocol_frame(body)?;
+    if value.get("kind").and_then(Value::as_str) == Some("progress") {
+        let payload = attach_progress_op_id(value, progress_op_id, session_id);
+        window
+            .emit("register-progress", payload)
+            .map_err(|e| internal_ipc_err(&format!("emit progress failed: {e}")))?;
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn run_python_action_with_progress(
+    payload: Value,
+    window: WebviewWindow,
+    progress_op_id: Option<u64>,
+    session_id: u64,
+) -> Result<Value, String> {
+    let action = payload
+        .get("action")
+        .and_then(|a| a.as_str())
+        .unwrap_or("?")
+        .to_string();
+    gbt_log(&format!("python spawn action={action} progress=1"));
+
+    let sidecar = resolve_sidecar()?;
+    let mut cmd = build_sidecar_command(&sidecar);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| {
+        internal_ipc_err(&format!("python spawn action={action} err={e}"))
+    })?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| internal_ipc_err("sidecar stdin unavailable"))?;
+        let payload_bytes =
+            serde_json::to_vec(&payload).map_err(|e| internal_ipc_err(&format!("serialize payload: {e}")))?;
+        stdin
+            .write_all(&payload_bytes)
+            .map_err(|e| internal_ipc_err(&format!("write sidecar stdin: {e}")))?;
+    }
+
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| internal_ipc_err("sidecar stderr unavailable"))?;
+    let stderr_handle = thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stderr.read_to_string(&mut buf);
+        buf
+    });
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| internal_ipc_err("sidecar stdout unavailable"))?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let mut body = String::new();
+    let mut in_frame = false;
+    let mut result: Option<Value> = None;
+
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|e| internal_ipc_err(&format!("read sidecar stdout: {e}")))?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']).trim_start_matches('\u{feff}');
+        if trimmed == FRAME_BEGIN {
+            in_frame = true;
+            body.clear();
+        } else if trimmed == FRAME_END {
+            if in_frame {
+                if let Some(frame) = handle_stream_frame(&window, &body, progress_op_id, session_id)? {
+                    result = Some(frame);
+                }
+            }
+            in_frame = false;
+        } else if in_frame {
+            body.push_str(trimmed);
+            body.push('\n');
+        }
+    }
+
+    let output = child
+        .wait()
+        .map_err(|e| internal_ipc_err(&format!("wait sidecar: {e}")))?;
+    let stderr = stderr_handle.join().unwrap_or_default();
+
+    if !output.success() {
+        gbt_log(&format!(
+            "python exit_fail action={action} code={:?}",
+            output.code()
+        ));
+        return Err(friendly_python_error(&stderr));
+    }
+
+    result.ok_or_else(|| internal_ipc_err("python result frame missing"))
+}
+
 /// 在 Tauri 的 blocking 线程池中运行阻塞调用，避免冻住 IPC 线程。
 async fn run_python_action_async(payload: Value) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || run_python_action(payload))
         .await
-        .map_err(|e| format!("任务调度失败: {e}"))?
+        .map_err(|e| internal_ipc_err(&format!("spawn_blocking failed: {e}")))?
+}
+
+async fn run_python_action_progress_async(
+    payload: Value,
+    window: WebviewWindow,
+    progress_op_id: Option<u64>,
+    session_id: u64,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_python_action_with_progress(payload, window, progress_op_id, session_id)
+    })
+    .await
+    .map_err(|e| internal_ipc_err(&format!("spawn_blocking failed: {e}")))?
 }
 
 // ---------- 机型与 SDK / Extension_Service 目标主机 -------------------------
+
+/// 前端用 `t('errors.<code>')` 展示；勿改为多行或带空格。
+const GBT_CONNECTION_LOCK_ERROR: &str = "GBT_CONNECTION_LOCK_ERROR";
+const GBT_ROBOT_OP_BUSY: &str = "GBT_ROBOT_OP_BUSY";
+const GBT_NOT_CONNECTED: &str = "GBT_NOT_CONNECTED";
+const GBT_EMPTY_CONTROLLER_IP: &str = "GBT_EMPTY_CONTROLLER_IP";
+const GBT_META_READ_FAILED: &str = "GBT_META_READ_FAILED";
+const GBT_DEBUG_EXPORT_BLOCKED: &str = "GBT_DEBUG_EXPORT_BLOCKED";
+const GBT_SESSION_MISMATCH: &str = "GBT_SESSION_MISMATCH";
+const GBT_TEACH_PANEL_IP_REQUIRED: &str = "GBT_TEACH_PANEL_IP_REQUIRED";
+const GBT_INVALID_EXPORT_DATE: &str = "GBT_INVALID_EXPORT_DATE";
+const GBT_INTERNAL_ERROR: &str = "GBT_INTERNAL_ERROR";
+const GBT_CONNECT_FAILED: &str = "GBT_CONNECT_FAILED";
+const GBT_FILE_NOT_READABLE: &str = "GBT_FILE_NOT_READABLE";
+const GBT_SIDECAR_MISSING: &str = "GBT_SIDECAR_MISSING";
+const GBT_EXTENSION_INSTALL_FAILED: &str = "GBT_EXTENSION_INSTALL_FAILED";
+
+/// 将后端原始错误规范为 `GBT_*` 码；非码文本记入日志后返回 `GBT_INTERNAL_ERROR`。
+fn normalize_ipc_error(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.starts_with("GBT_") && !raw.contains(' ') && raw.len() < 80 {
+        return raw.to_string();
+    }
+    if !raw.is_empty() {
+        gbt_log(&format!("ipc_err uncoded: {raw}"));
+    }
+    GBT_INTERNAL_ERROR.to_string()
+}
 
 /// 前端用 `t('messages.unsupportedRobotModel')` 展示；勿改为多行或带空格。
 const GBT_UNSUPPORTED_ROBOT_MODEL: &str = "GBT_UNSUPPORTED_ROBOT_MODEL";
@@ -431,6 +692,35 @@ fn parse_gbt_series(model: &str) -> Result<GbtSeries, String> {
         return Ok(GbtSeries::S);
     }
     Err(GBT_UNSUPPORTED_ROBOT_MODEL.to_string())
+}
+
+/// sidecar 业务失败帧：`{"ok": false, "code": "...", "message": "..."}`。
+fn sidecar_error_message(v: &Value) -> Option<String> {
+    if v.get("ok").and_then(Value::as_bool) == Some(false) {
+        if let Some(code) = v.get("code").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            if code.starts_with("GBT_") {
+                return Some(code.to_string());
+            }
+            gbt_log(&format!("sidecar_err non_gbt_code: {code}"));
+            return Some(GBT_INTERNAL_ERROR.to_string());
+        }
+        let msg = v
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("");
+        if msg.starts_with("GBT_") {
+            return Some(msg.to_string());
+        }
+        gbt_log(&format!("sidecar_err uncoded: {msg}"));
+        return Some(GBT_INTERNAL_ERROR.to_string());
+    }
+    None
+}
+
+fn internal_ipc_err(context: &str) -> String {
+    gbt_log(context);
+    GBT_INTERNAL_ERROR.to_string()
 }
 
 /// P/C/S：已配置示教器则经示教器 SSH；未填示教器则不做 pip 检测（返回 None）。
@@ -466,7 +756,7 @@ fn resolve_extension_http_host(model: &str, conn: &ConnectionState) -> Result<St
 
 async fn fetch_robot_model_for_conn(conn: &ConnectionState) -> Result<String, String> {
     if !conn.connected {
-        return Err("请先连接机器人".into());
+        return Err(GBT_NOT_CONNECTED.into());
     }
     if conn.ip == DEBUG_BYPASS_IP {
         return Ok(String::new());
@@ -474,12 +764,19 @@ async fn fetch_robot_model_for_conn(conn: &ConnectionState) -> Result<String, St
     let mut payload_map = connection_payload_fields(conn);
     payload_map.insert("action".into(), Value::String("fetch_robot_meta".into()));
     let v = run_python_action_async(Value::Object(payload_map)).await?;
-    Ok(v
+    if let Some(msg) = sidecar_error_message(&v) {
+        return Err(msg);
+    }
+    let model = v
         .get("model")
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .trim()
-        .to_string())
+        .to_string();
+    if model.is_empty() {
+        return Err(GBT_META_READ_FAILED.to_string());
+    }
+    Ok(model)
 }
 
 async fn fetch_robot_model_value(state: &State<'_, AppState>) -> Result<String, String> {
@@ -502,7 +799,7 @@ async fn resolve_model_for_sdk_commands(
 
 fn validate_extension_install_basics(conn: &ConnectionState) -> Result<(), String> {
     if !conn.connected {
-        return Err("请先连接机器人".into());
+        return Err(GBT_NOT_CONNECTED.into());
     }
     if conn.ip == DEBUG_BYPASS_IP {
         return Err(GBT_PLUGIN_DEBUG_BYPASS.to_string());
@@ -517,8 +814,9 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+#[cfg(feature = "devtools")]
 #[tauri::command]
-fn open_devtools(window: tauri::WebviewWindow) {
+fn open_devtools(window: WebviewWindow) {
     window.open_devtools();
 }
 
@@ -530,10 +828,11 @@ fn get_log_dir() -> Option<String> {
 #[tauri::command]
 async fn fetch_robot_meta(state: State<'_, AppState>) -> Result<RobotMeta, String> {
     gbt_log("fetch_robot_meta begin");
+    let _op = try_acquire_robot_op(state.inner()).await?;
     let conn = lock_connection(&state)?.clone();
     if !conn.connected {
         gbt_log("fetch_robot_meta abort: not connected");
-        return Err("请先连接机器人".to_string());
+        return Err(GBT_NOT_CONNECTED.to_string());
     }
     if conn.ip == DEBUG_BYPASS_IP {
         gbt_log("fetch_robot_meta debug_bypass empty meta");
@@ -549,6 +848,10 @@ async fn fetch_robot_meta(state: State<'_, AppState>) -> Result<RobotMeta, Strin
         gbt_log(&format!("fetch_robot_meta python_err {e}"));
         e
     })?;
+    if let Some(msg) = sidecar_error_message(&v) {
+        gbt_log(&format!("fetch_robot_meta sidecar_err {msg}"));
+        return Err(msg);
+    }
     let meta = RobotMeta {
         model: v
             .get("model")
@@ -563,6 +866,10 @@ async fn fetch_robot_meta(state: State<'_, AppState>) -> Result<RobotMeta, Strin
             .trim()
             .to_string(),
     };
+    if meta.model.is_empty() {
+        gbt_log("fetch_robot_meta empty_model");
+        return Err(GBT_META_READ_FAILED.to_string());
+    }
     if let Err(e) = parse_gbt_series(&meta.model) {
         gbt_log(&format!(
             "fetch_robot_meta unsupported_model disconnect model={:?}",
@@ -588,7 +895,7 @@ async fn fetch_robot_sdk_version(
     let conn = lock_connection(&state)?.clone();
     if !conn.connected {
         gbt_log("fetch_robot_sdk_version abort: not connected");
-        return Err("请先连接机器人".to_string());
+        return Err(GBT_NOT_CONNECTED.to_string());
     }
     if conn.ip == DEBUG_BYPASS_IP {
         gbt_log("fetch_robot_sdk_version debug_bypass empty");
@@ -611,12 +918,12 @@ async fn fetch_robot_sdk_version(
         sftp_export::fetch_agilebot_sdk_version(&host, &password)
     })
     .await
-    .map_err(|e| format!("任务调度失败: {e}"))?;
+    .map_err(|e| internal_ipc_err(&format!("fetch_robot_sdk_version task: {e}")))?;
     match &inner {
         Ok(v) => gbt_log(&format!("fetch_robot_sdk_version ok len={}", v.len())),
         Err(e) => gbt_log(&format!("fetch_robot_sdk_version err {e}")),
     }
-    inner
+    inner.map_err(|e| normalize_ipc_error(&e))
 }
 
 #[tauri::command]
@@ -634,7 +941,7 @@ async fn install_robot_extension(
     }
     let path = Path::new(trimmed);
     if !path.is_file() {
-        return Err(format!("文件不存在或不可读: {}", path.display()));
+        return Err(GBT_FILE_NOT_READABLE.to_string());
     }
     let display_name = path
         .file_name()
@@ -648,11 +955,17 @@ async fn install_robot_extension(
         }
         e
     })?;
-    let client = extension_install::Extension::new(&host).map_err(|e| format!("{e:#}"))?;
+    let client = extension_install::Extension::new(&host).map_err(|e| {
+        gbt_log(&format!("install_robot_extension client: {e:#}"));
+        GBT_EXTENSION_INSTALL_FAILED.to_string()
+    })?;
     let info = client
         .install_extension(path, &display_name)
         .await
-        .map_err(|e| format!("{e:#}"))?;
+        .map_err(|e| {
+            gbt_log(&format!("install_robot_extension failed: {e:#}"));
+            GBT_EXTENSION_INSTALL_FAILED.to_string()
+        })?;
     gbt_log(&format!(
         "install_robot_extension ok name={} version={}",
         info.name, info.version
@@ -675,7 +988,7 @@ async fn install_robot_wheel(
     }
     let path = Path::new(trimmed);
     if !path.is_file() {
-        return Err(format!("文件不存在或不可读: {}", path.display()));
+        return Err(GBT_FILE_NOT_READABLE.to_string());
     }
     let display_name = path
         .file_name()
@@ -689,16 +1002,23 @@ async fn install_robot_wheel(
         }
         e
     })?;
-    let client = extension_install::Extension::new(&host).map_err(|e| format!("{e:#}"))?;
+    let client = extension_install::Extension::new(&host).map_err(|e| {
+        gbt_log(&format!("install_robot_wheel client: {e:#}"));
+        GBT_EXTENSION_INSTALL_FAILED.to_string()
+    })?;
     client
         .install_wheel(path, &display_name)
         .await
-        .map_err(|e| format!("{e:#}"))?;
+        .map_err(|e| {
+            gbt_log(&format!("install_robot_wheel failed: {e:#}"));
+            GBT_EXTENSION_INSTALL_FAILED.to_string()
+        })?;
     gbt_log("install_robot_wheel ok");
-    Ok(CommonResponse {
+    Ok(CommonResponse { code: Some("wheel_installed".to_string()), count: None,
         ok: true,
         message: String::new(),
         details: None,
+        stats: None,
     })
 }
 
@@ -708,6 +1028,7 @@ async fn connect_robot(
     state: State<'_, AppState>,
 ) -> Result<ConnectionState, String> {
     gbt_log("connect_robot begin");
+    let _op = try_acquire_robot_op(state.inner()).await?;
     let controller_ip = req.controller_ip.trim().to_string();
     let teach_panel_ip = req
         .teach_panel_ip
@@ -720,7 +1041,7 @@ async fn connect_robot(
     if controller_ip.is_empty() {
         let mut conn = lock_connection(&state)?;
         conn.connected = false;
-        conn.message = "控制柜 IP 不能为空".to_string();
+        conn.message = GBT_EMPTY_CONTROLLER_IP.to_string();
         gbt_log("connect_robot end empty_controller_ip");
         return Ok(conn.clone());
     }
@@ -730,7 +1051,8 @@ async fn connect_robot(
         conn.ip = controller_ip.clone();
         conn.teach_panel_ip = teach_panel_ip.clone();
         conn.local_proxy = local_proxy;
-        conn.message = "调试模式（未连接真实机器人）".to_string();
+        assign_connection_session(state.inner(), &mut conn);
+        conn.message = String::new();
         gbt_log("connect_robot end debug_bypass");
         return Ok(conn.clone());
     }
@@ -764,10 +1086,13 @@ async fn connect_robot(
                 conn.ip = controller_ip.clone();
                 conn.teach_panel_ip = teach_panel_ip.clone();
                 conn.local_proxy = local_proxy;
+                assign_connection_session(state.inner(), &mut conn);
                 conn.message = if msg.is_empty() {
-                    "连接已建立".to_string()
+                    String::new()
+                } else if msg.starts_with("GBT_") {
+                    msg.clone()
                 } else {
-                    msg
+                    String::new()
                 };
                 gbt_log(&format!("connect_robot ok controller_ip={controller_ip}"));
             } else {
@@ -776,9 +1101,12 @@ async fn connect_robot(
                 conn.teach_panel_ip.clear();
                 conn.local_proxy = false;
                 conn.message = if msg.is_empty() {
-                    "连接失败".to_string()
-                } else {
+                    GBT_CONNECT_FAILED.to_string()
+                } else if msg.starts_with("GBT_") {
                     msg.clone()
+                } else {
+                    gbt_log(&format!("connect_robot sidecar_msg={msg}"));
+                    GBT_CONNECT_FAILED.to_string()
                 };
                 gbt_log(&format!(
                     "connect_robot failed controller_ip={controller_ip} msg={msg}"
@@ -790,7 +1118,7 @@ async fn connect_robot(
             conn.ip.clear();
             conn.teach_panel_ip.clear();
             conn.local_proxy = false;
-            conn.message = e.clone();
+            conn.message = normalize_ipc_error(&e);
             gbt_log(&format!(
                 "connect_robot python_err controller_ip={controller_ip} err={e}"
             ));
@@ -807,31 +1135,38 @@ fn get_connection_status(state: State<AppState>) -> Result<ConnectionState, Stri
 #[tauri::command]
 fn disconnect_robot(state: State<AppState>) -> Result<CommonResponse, String> {
     gbt_log("disconnect_robot");
+    let _op = try_acquire_robot_op_blocking(state.inner())?;
     local_disconnect(&state)?;
-    Ok(CommonResponse {
+    Ok(CommonResponse { code: Some("disconnected".to_string()), count: None,
         ok: true,
-        message: "已断开连接".to_string(),
+        message: String::new(),
         details: None,
+        stats: None,
     })
 }
 
 #[tauri::command]
 async fn read_registers(
+    window: WebviewWindow,
     req: ReadRequest,
     state: State<'_, AppState>,
 ) -> Result<Vec<Value>, String> {
     gbt_log(&format!(
-        "read_registers begin type={} program={:?} mode={} start={:?} end={:?}",
+        "read_registers begin type={} program={:?} mode={} start={:?} end={:?} progress_op={:?}",
         req.register_type,
         req.program_name,
         req.selector.mode,
         req.selector.start_id,
-        req.selector.end_id
+        req.selector.end_id,
+        req.progress_op_id
     ));
+    let _op = try_acquire_robot_op(state.inner()).await?;
+    let progress_op_id = req.progress_op_id;
     let conn = lock_connection(&state)?.clone();
+    require_robot_session(&conn, req.session_id)?;
     if !conn.connected {
         gbt_log("read_registers abort not_connected");
-        return Err("请先连接机器人".to_string());
+        return Err(GBT_NOT_CONNECTED.to_string());
     }
     if conn.ip == DEBUG_BYPASS_IP {
         gbt_log("read_registers debug_bypass empty");
@@ -841,13 +1176,20 @@ async fn read_registers(
     payload_map.insert("action".into(), Value::String("read_preview".into()));
     payload_map.insert(
         "request".into(),
-        serde_json::to_value(&req).map_err(|e| format!("序列化 ReadRequest 失败: {e}"))?,
+        serde_json::to_value(&req).map_err(|e| internal_ipc_err(&format!("serialize ReadRequest: {e}")))?,
     );
+    let session_id = conn.session_id;
     let payload = Value::Object(payload_map);
-    let result = run_python_action_async(payload).await.map_err(|e| {
+    let result = run_python_action_progress_async(payload, window, progress_op_id, session_id)
+        .await
+        .map_err(|e| {
         gbt_log(&format!("read_registers python_err {e}"));
         e
     })?;
+    if let Some(msg) = sidecar_error_message(&result) {
+        gbt_log(&format!("read_registers sidecar_err {msg}"));
+        return Err(msg);
+    }
     let rows = result
         .get("rows")
         .and_then(Value::as_array)
@@ -859,36 +1201,45 @@ async fn read_registers(
 
 #[tauri::command]
 async fn apply_registers(
+    window: WebviewWindow,
     req: ApplyRequest,
     state: State<'_, AppState>,
 ) -> Result<CommonResponse, String> {
     gbt_log(&format!(
-        "apply_registers begin type={} policy={} rows={}",
+        "apply_registers begin type={} policy={} rows={} progress_op={:?}",
         req.register_type,
         req.conflict_policy,
-        req.rows.len()
+        req.rows.len(),
+        req.progress_op_id
     ));
+    let _op = try_acquire_robot_op(state.inner()).await?;
+    let progress_op_id = req.progress_op_id;
     let conn = lock_connection(&state)?.clone();
+    require_robot_session(&conn, req.session_id)?;
     if !conn.connected {
         gbt_log("apply_registers abort not_connected");
-        return Err("请先连接机器人".to_string());
+        return Err(GBT_NOT_CONNECTED.to_string());
     }
     if conn.ip == DEBUG_BYPASS_IP {
         gbt_log("apply_registers debug_bypass skip_write");
-        return Ok(CommonResponse {
+        return Ok(CommonResponse { code: Some("write_skipped_debug".to_string()), count: None,
             ok: true,
-            message: "调试模式：已跳过写入（未连接真实机器人）".to_string(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     }
     let mut payload_map = connection_payload_fields(&conn);
     payload_map.insert("action".into(), Value::String("apply_rows".into()));
     payload_map.insert(
         "request".into(),
-        serde_json::to_value(&req).map_err(|e| format!("序列化 ApplyRequest 失败: {e}"))?,
+        serde_json::to_value(&req).map_err(|e| internal_ipc_err(&format!("serialize ApplyRequest: {e}")))?,
     );
+    let session_id = conn.session_id;
     let payload = Value::Object(payload_map);
-    let result = run_python_action_async(payload).await.map_err(|e| {
+    let result = run_python_action_progress_async(payload, window, progress_op_id, session_id)
+        .await
+        .map_err(|e| {
         gbt_log(&format!("apply_registers python_err {e}"));
         e
     })?;
@@ -897,13 +1248,21 @@ async fn apply_registers(
         message: result
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("执行完成")
+            .unwrap_or("")
             .to_string(),
+        code: result
+            .get("code")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string()),
+        count: None,
         details: result.get("details").and_then(Value::as_array).map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect::<Vec<String>>()
         }),
+        stats: result
+            .get("stats")
+            .and_then(|v| serde_json::from_value::<ApplyStats>(v.clone()).ok()),
     };
     gbt_log(&format!(
         "apply_registers end ok={} detail_count={}",
@@ -916,25 +1275,24 @@ async fn apply_registers(
 fn file_path_to_string(path: FilePath) -> Result<String, String> {
     path.into_path()
         .map(|p| p.to_string_lossy().to_string())
-        .map_err(|e| format!("无法解析保存路径: {e}"))
+        .map_err(|e| internal_ipc_err(&format!("save path parse failed: {e}")))
 }
 
 /// 导出前校验：已连接、非调试绕过、控制柜 IP 与当前会话一致。
 fn validate_export_controller_session(
     state: &State<'_, AppState>,
     controller_ip: &str,
-) -> Result<(), String> {
+    req_session_id: Option<u64>,
+) -> Result<u64, String> {
     let conn = lock_connection(state)?.clone();
-    if !conn.connected {
-        return Err("请先连接机器人".into());
-    }
+    require_robot_session(&conn, req_session_id)?;
     if conn.ip == DEBUG_BYPASS_IP {
-        return Err("调试模式不支持日志与程序数据导出".into());
+        return Err(GBT_DEBUG_EXPORT_BLOCKED.into());
     }
     if conn.ip.trim() != controller_ip.trim() {
-        return Err("连接信息与当前会话不一致".into());
+        return Err(GBT_SESSION_MISMATCH.into());
     }
-    Ok(())
+    Ok(conn.session_id)
 }
 
 /// 示教器日志导出：额外要求示教器 IP 已配置且与当前会话一致（单次加锁，避免重入死锁）。
@@ -942,29 +1300,28 @@ fn validate_export_teach_session(
     state: &State<'_, AppState>,
     controller_ip: &str,
     teach_panel_ip: &str,
-) -> Result<(), String> {
+    req_session_id: Option<u64>,
+) -> Result<u64, String> {
     let conn = lock_connection(state)?.clone();
-    if !conn.connected {
-        return Err("请先连接机器人".into());
-    }
+    require_robot_session(&conn, req_session_id)?;
     if conn.ip == DEBUG_BYPASS_IP {
-        return Err("调试模式不支持日志与程序数据导出".into());
+        return Err(GBT_DEBUG_EXPORT_BLOCKED.into());
     }
     if conn.ip.trim() != controller_ip.trim() {
-        return Err("连接信息与当前会话不一致".into());
+        return Err(GBT_SESSION_MISMATCH.into());
     }
     if conn.teach_panel_ip.trim().is_empty() {
-        return Err("未配置示教器 IP".into());
+        return Err(GBT_TEACH_PANEL_IP_REQUIRED.into());
     }
     if conn.teach_panel_ip.trim() != teach_panel_ip.trim() {
-        return Err("连接信息与当前会话不一致".into());
+        return Err(GBT_SESSION_MISMATCH.into());
     }
-    Ok(())
+    Ok(conn.session_id)
 }
 
 #[tauri::command]
 async fn export_preview_to_excel(
-    app: tauri::AppHandle,
+    app: AppHandle,
     register_type: String,
     rows: Vec<Value>,
 ) -> Result<CommonResponse, String> {
@@ -985,14 +1342,15 @@ async fn export_preview_to_excel(
         }
     })
     .await
-    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+    .map_err(|e| internal_ipc_err(&format!("save dialog failed: {e}")))?;
 
     let Some(fp) = file_path else {
         gbt_log("export_preview_to_excel user_cancelled_dialog");
-        return Ok(CommonResponse {
+        return Ok(CommonResponse { code: Some("save_cancelled".to_string()), count: None,
             ok: false,
-            message: "已取消保存".to_string(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     };
     let output_path = file_path_to_string(fp)?;
@@ -1009,20 +1367,21 @@ async fn export_preview_to_excel(
     let result = run_python_action_async(payload).await?;
     let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
     gbt_log(&format!("export_preview_to_excel end ok={ok}"));
-    Ok(CommonResponse {
+    Ok(CommonResponse { code: Some("export_saved".to_string()), count: None,
         ok,
         message: result
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("导出完成")
+            .unwrap_or("")
             .to_string(),
         details: None,
+        stats: None,
     })
 }
 
 #[tauri::command]
 async fn export_template_excel(
-    app: tauri::AppHandle,
+    app: AppHandle,
     register_type: String,
 ) -> Result<CommonResponse, String> {
     gbt_log(&format!("export_template_excel begin type={register_type}"));
@@ -1038,14 +1397,15 @@ async fn export_template_excel(
         }
     })
     .await
-    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+    .map_err(|e| internal_ipc_err(&format!("save dialog failed: {e}")))?;
 
     let Some(fp) = file_path else {
         gbt_log("export_template_excel user_cancelled_dialog");
-        return Ok(CommonResponse {
+        return Ok(CommonResponse { code: Some("save_cancelled".to_string()), count: None,
             ok: false,
-            message: "已取消保存".to_string(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     };
     let output_path = file_path_to_string(fp)?;
@@ -1057,14 +1417,15 @@ async fn export_template_excel(
     let result = run_python_action_async(payload).await?;
     let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
     gbt_log(&format!("export_template_excel end ok={ok}"));
-    Ok(CommonResponse {
+    Ok(CommonResponse { code: Some("template_saved".to_string()), count: None,
         ok,
         message: result
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("模板导出完成")
+            .unwrap_or("")
             .to_string(),
         details: None,
+        stats: None,
     })
 }
 
@@ -1073,6 +1434,10 @@ async fn export_template_excel(
 struct ExportControllerLogsRequest {
     controller_ip: String,
     date_yyyy_mm_dd: String,
+    #[serde(default)]
+    session_id: Option<u64>,
+    #[serde(default)]
+    progress_op_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1081,22 +1446,37 @@ struct ExportTeachPanelLogsRequest {
     controller_ip: String,
     teach_panel_ip: String,
     date_yyyy_mm_dd: String,
+    #[serde(default)]
+    session_id: Option<u64>,
+    #[serde(default)]
+    progress_op_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportProgramDataRequest {
     controller_ip: String,
+    #[serde(default)]
+    session_id: Option<u64>,
+    #[serde(default)]
+    progress_op_id: Option<u64>,
 }
 
 #[tauri::command]
 async fn export_controller_logs_zip(
-    app: tauri::AppHandle,
+    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
     req: ExportControllerLogsRequest,
 ) -> Result<CommonResponse, String> {
-    validate_export_controller_session(&state, &req.controller_ip)?;
-    let yyyymmdd = sftp_export::parse_export_date(&req.date_yyyy_mm_dd)?;
+    let _op = try_acquire_robot_op(state.inner()).await?;
+    let session_id =
+        validate_export_controller_session(&state, &req.controller_ip, req.session_id)?;
+    let yyyymmdd = sftp_export::parse_export_date(&req.date_yyyy_mm_dd).map_err(|e| {
+        gbt_log(&format!("invalid export date: {e}"));
+        GBT_INVALID_EXPORT_DATE.to_string()
+    })?;
+    let progress_op_id = req.progress_op_id;
     let default_name = format!("controller_logs_{yyyymmdd}.zip");
     let file_path = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
@@ -1110,45 +1490,72 @@ async fn export_controller_logs_zip(
         }
     })
     .await
-    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+    .map_err(|e| internal_ipc_err(&format!("save dialog failed: {e}")))?;
 
     let Some(fp) = file_path else {
-        return Ok(CommonResponse {
+        return Ok(CommonResponse { code: Some("save_cancelled".to_string()), count: None,
             ok: false,
-            message: "已取消保存".into(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     };
     let zip_path = file_path_to_string(fp)?;
     let host = req.controller_ip;
+    let window_bg = window.clone();
+    let zip_path_for_task = zip_path.clone();
     let count = tauri::async_runtime::spawn_blocking(move || {
-        sftp_export::run_export_controller_logs(&host, &yyyymmdd, std::path::Path::new(&zip_path))
+        let mut progress_fn = |phase: &'static str, current: usize, total: usize, done: usize| {
+            emit_export_progress(&window_bg, progress_op_id, session_id, phase, current, total, done);
+        };
+        let mut progress_cb: sftp_export::ExportProgressCallback<'_> = Some(&mut progress_fn);
+        sftp_export::run_export_controller_logs(
+            &host,
+            &yyyymmdd,
+            std::path::Path::new(&zip_path_for_task),
+            &mut progress_cb,
+        )
     })
     .await
-    .map_err(|e| format!("导出任务失败: {e}"))??;
+    .map_err(|e| internal_ipc_err(&format!("export task failed: {e}")))?
+    .map_err(|e| normalize_ipc_error(&e))?;
 
     if count == 0 {
-        return Ok(CommonResponse {
+        let _ = std::fs::remove_file(&zip_path);
+        return Ok(CommonResponse { code: Some("no_logs".to_string()), count: Some(0),
             ok: false,
-            message: "未查找到对应日期的日志".into(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     }
-    Ok(CommonResponse {
+    Ok(CommonResponse { code: Some("logs_exported".to_string()), count: Some(count as u64),
         ok: true,
-        message: format!("已导出 {count} 个日志文件"),
+        message: String::new(),
         details: None,
+        stats: None,
     })
 }
 
 #[tauri::command]
 async fn export_teach_panel_logs_zip(
-    app: tauri::AppHandle,
+    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
     req: ExportTeachPanelLogsRequest,
 ) -> Result<CommonResponse, String> {
-    validate_export_teach_session(&state, &req.controller_ip, &req.teach_panel_ip)?;
-    let yyyymmdd = sftp_export::parse_export_date(&req.date_yyyy_mm_dd)?;
+    let _op = try_acquire_robot_op(state.inner()).await?;
+    let session_id = validate_export_teach_session(
+        &state,
+        &req.controller_ip,
+        &req.teach_panel_ip,
+        req.session_id,
+    )?;
+    let yyyymmdd = sftp_export::parse_export_date(&req.date_yyyy_mm_dd).map_err(|e| {
+        gbt_log(&format!("invalid export date: {e}"));
+        GBT_INVALID_EXPORT_DATE.to_string()
+    })?;
+    let progress_op_id = req.progress_op_id;
     let default_name = format!("teach_panel_logs_{yyyymmdd}.zip");
     let file_path = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
@@ -1162,44 +1569,64 @@ async fn export_teach_panel_logs_zip(
         }
     })
     .await
-    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+    .map_err(|e| internal_ipc_err(&format!("save dialog failed: {e}")))?;
 
     let Some(fp) = file_path else {
-        return Ok(CommonResponse {
+        return Ok(CommonResponse { code: Some("save_cancelled".to_string()), count: None,
             ok: false,
-            message: "已取消保存".into(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     };
     let zip_path = file_path_to_string(fp)?;
     let host = req.teach_panel_ip;
+    let window_bg = window.clone();
+    let zip_path_for_task = zip_path.clone();
     let count = tauri::async_runtime::spawn_blocking(move || {
-        sftp_export::run_export_teach_panel_logs(&host, &yyyymmdd, std::path::Path::new(&zip_path))
+        let mut progress_fn = |phase: &'static str, current: usize, total: usize, done: usize| {
+            emit_export_progress(&window_bg, progress_op_id, session_id, phase, current, total, done);
+        };
+        let mut progress_cb: sftp_export::ExportProgressCallback<'_> = Some(&mut progress_fn);
+        sftp_export::run_export_teach_panel_logs(
+            &host,
+            &yyyymmdd,
+            std::path::Path::new(&zip_path_for_task),
+            &mut progress_cb,
+        )
     })
     .await
-    .map_err(|e| format!("导出任务失败: {e}"))??;
+    .map_err(|e| internal_ipc_err(&format!("export task failed: {e}")))?
+    .map_err(|e| normalize_ipc_error(&e))?;
 
     if count == 0 {
-        return Ok(CommonResponse {
+        let _ = std::fs::remove_file(&zip_path);
+        return Ok(CommonResponse { code: Some("no_logs".to_string()), count: Some(0),
             ok: false,
-            message: "未查找到对应日期的日志".into(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     }
-    Ok(CommonResponse {
+    Ok(CommonResponse { code: Some("logs_exported".to_string()), count: Some(count as u64),
         ok: true,
-        message: format!("已导出 {count} 个日志文件"),
+        message: String::new(),
         details: None,
+        stats: None,
     })
 }
 
 #[tauri::command]
 async fn export_program_data_zip(
-    app: tauri::AppHandle,
+    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
     req: ExportProgramDataRequest,
 ) -> Result<CommonResponse, String> {
-    validate_export_controller_session(&state, &req.controller_ip)?;
+    let _op = try_acquire_robot_op(state.inner()).await?;
+    let session_id =
+        validate_export_controller_session(&state, &req.controller_ip, req.session_id)?;
+    let progress_op_id = req.progress_op_id;
     let default_name = "robot_data_export.zip".to_string();
     let file_path = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
@@ -1213,27 +1640,41 @@ async fn export_program_data_zip(
         }
     })
     .await
-    .map_err(|e| format!("打开保存对话框失败: {e}"))?;
+    .map_err(|e| internal_ipc_err(&format!("save dialog failed: {e}")))?;
 
     let Some(fp) = file_path else {
-        return Ok(CommonResponse {
+        return Ok(CommonResponse { code: Some("save_cancelled".to_string()), count: None,
             ok: false,
-            message: "已取消保存".into(),
+            message: String::new(),
             details: None,
+            stats: None,
         });
     };
     let zip_path = file_path_to_string(fp)?;
     let host = req.controller_ip;
-    tauri::async_runtime::spawn_blocking(move || {
-        sftp_export::run_export_program_data(&host, std::path::Path::new(&zip_path))
+    let window_bg = window.clone();
+    let file_count = tauri::async_runtime::spawn_blocking(move || {
+        let mut progress_fn = |phase: &'static str, current: usize, total: usize, done: usize| {
+            emit_export_progress(&window_bg, progress_op_id, session_id, phase, current, total, done);
+        };
+        let mut progress_cb: sftp_export::ExportProgressCallback<'_> = Some(&mut progress_fn);
+        sftp_export::run_export_program_data(
+            &host,
+            std::path::Path::new(&zip_path),
+            &mut progress_cb,
+        )
     })
     .await
-    .map_err(|e| format!("导出任务失败: {e}"))??;
+    .map_err(|e| internal_ipc_err(&format!("export task failed: {e}")))?
+    .map_err(|e| normalize_ipc_error(&e))?;
 
     Ok(CommonResponse {
+        code: Some("program_data_exported".to_string()),
+        count: Some(file_count as u64),
         ok: true,
-        message: "导出完成".into(),
+        message: String::new(),
         details: None,
+        stats: None,
     })
 }
 
@@ -1246,8 +1687,11 @@ pub fn run() {
             ip: String::new(),
             teach_panel_ip: String::new(),
             local_proxy: false,
-            message: "未连接".to_string(),
+            session_id: 0,
+            message: String::new(),
         }),
+        robot_op: tokio::sync::Mutex::new(()),
+        next_session_id: AtomicU64::new(1),
     };
 
     let result = tauri::Builder::default()
@@ -1288,6 +1732,7 @@ pub fn run() {
             export_controller_logs_zip,
             export_teach_panel_logs_zip,
             export_program_data_zip,
+            #[cfg(feature = "devtools")]
             open_devtools,
             get_log_dir
         ])
@@ -1306,3 +1751,5 @@ pub fn run() {
         std::process::exit(1);
     }
 }
+
+

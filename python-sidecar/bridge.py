@@ -23,7 +23,7 @@ import traceback
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # ---------- 环境准备 --------------------------------------------------------
 
@@ -31,6 +31,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", newline="")
+# 协议帧走原始 fd 直写，避免子进程管道全缓冲导致进度事件批量到达前端。
+_PROTOCOL_FD = sys.stdout.fileno()
 
 try:
     import openpyxl  # noqa: F401  (显式校验，缺失时给出清晰错误)
@@ -111,11 +113,9 @@ else:
 
 def _ensure_sdk_ready() -> None:
     if Arm is None or StatusCodeEnum is None:
-        err = f": {_SDK_IMPORT_ERR!r}" if _SDK_IMPORT_ERR is not None else ""
-        raise RuntimeError(
-            "未找到 Agilebot Python SDK。请确认已安装 Python_v2.0.1.0 目录中的 .whl，"
-            f"或在打包脚本中已正确嵌入 SDK{err}。"
-        )
+        if _SDK_IMPORT_ERR is not None:
+            log_py(f"SDK import failed: {_SDK_IMPORT_ERR!r}")
+        gbt_raise("GBT_SDK_NOT_FOUND")
 
 
 # ---------- 协议辅助 --------------------------------------------------------
@@ -124,23 +124,45 @@ FRAME_BEGIN = "<<<GBT-BEGIN>>>"
 FRAME_END = "<<<GBT-END>>>"
 
 
+def gbt_raise(code: str) -> None:
+    """抛出仅含 `GBT_*` 错误码的异常，供 main() 写入 sidecar 帧。"""
+    raise RuntimeError(code)
+
+
+def sidecar_error_code(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    if msg.startswith("GBT_") and " " not in msg:
+        return msg
+    return "GBT_INTERNAL_ERROR"
+
+
 def emit_frame(data: Dict[str, Any]) -> None:
     """写出被分隔符包裹的单帧 JSON（UTF-8，不转义非 ASCII）。"""
     text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    sys.stdout.write(FRAME_BEGIN)
-    sys.stdout.write("\n")
-    sys.stdout.write(text)
-    sys.stdout.write("\n")
-    sys.stdout.write(FRAME_END)
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    chunk = f"{FRAME_BEGIN}\n{text}\n{FRAME_END}\n".encode("utf-8")
+    os.write(_PROTOCOL_FD, chunk)
+
+
+ProgressCallback = Callable[[int, Optional[int], int], None]
+
+
+def emit_progress(action: str, current: int, total: Optional[int], matched: int) -> None:
+    emit_frame(
+        {
+            "kind": "progress",
+            "action": action,
+            "current": current,
+            "total": total,
+            "matched": matched,
+        }
+    )
 
 
 def read_payload() -> Dict[str, Any]:
     """从 stdin 读取 UTF-8 JSON 载荷（Rust 端写完后 close stdin）。"""
     raw = sys.stdin.read()
     if not raw:
-        raise RuntimeError("stdin 无输入 payload")
+        raise RuntimeError("GBT_INTERNAL_ERROR")
     return json.loads(raw)
 
 
@@ -174,6 +196,35 @@ def unwrap_status(ret: Any) -> Any:
 def status_text(ret: Any) -> str:
     st = unwrap_status(ret)
     return getattr(st, "errmsg", str(st))
+
+
+def status_indicates_exists(ret: Any) -> bool:
+    st = unwrap_status(ret)
+    raw = " ".join(
+        str(x)
+        for x in (
+            getattr(st, "name", ""),
+            getattr(st, "value", ""),
+            getattr(st, "errmsg", ""),
+            st,
+        )
+        if x is not None
+    ).lower()
+    return any(
+        token in raw
+        for token in (
+            "exist",
+            "exists",
+            "already",
+            "duplicate",
+            "conflict",
+            "已存在",
+            "已经存在",
+            "存在",
+            "重複",
+            "重复",
+        )
+    )
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -286,7 +337,7 @@ def make_headers(register_type: str) -> List[str]:
         return ["Type", "ID", "X", "Y", "Z", "A", "B", "C", "TF", "UF", "Coord"]
     if register_type == "PR":
         return ["TYPE", "ID", "X", "Y", "Z", "A", "B", "C", "coord"]
-    raise ValueError("不支持的寄存器类型")
+    raise ValueError("GBT_UNSUPPORTED_REGISTER_TYPE")
 
 
 # P 寄存器（程序位姿）服务的 HTTP 端口，与 R/PR 所用端口不同。
@@ -298,10 +349,20 @@ READ_ALL_CONSECUTIVE_FAIL_LIMIT = 10
 READ_ALL_MAX_ID = 100000
 
 
+def _normalize_id(value: Any) -> Optional[int]:
+    try:
+        idx = int(value)
+    except Exception:
+        return None
+    if idx < READ_ALL_FIRST_ID or idx > READ_ALL_MAX_ID:
+        return None
+    return idx
+
+
 def build_indexes(selector: Dict[str, Any]) -> List[int]:
     mode = selector.get("mode", "range")
     if mode == "all":
-        raise RuntimeError("内部错误：「全部」模式应使用 read_*_all_scan，不应调用 build_indexes。")
+        raise RuntimeError("GBT_INTERNAL_ERROR")
     start_id = int(selector.get("startId", 0))
     end_id = int(selector.get("endId", start_id))
     if end_id < start_id:
@@ -356,7 +417,7 @@ def connect_arm(controller_ip: str, teach_panel_ip: Any = None, local_proxy: boo
     if ret != StatusCodeEnum.OK:
         err = getattr(ret, "errmsg", ret)
         log_py(f"SDK Arm.connect failed: {err!r}")
-        raise RuntimeError(f"连接机器人失败: {err}")
+        gbt_raise("GBT_CONNECT_FAILED")
     log_py("SDK Arm.connect ok")
     return arm
 
@@ -374,14 +435,7 @@ def _check_p_service(ip: str) -> None:
         log_py(f"_check_p_service ok ip={ip!r} port={P_SERVICE_PORT}")
     except OSError as exc:
         log_py(f"_check_p_service failed ip={ip!r} port={P_SERVICE_PORT} exc={exc!r}")
-        raise RuntimeError(
-            f"无法连接机器人的P寄存器服务（{ip}:{P_SERVICE_PORT}）。\n"
-            f"P寄存器（程序位姿）需要控制器额外开放 {P_SERVICE_PORT} 端口，"
-            f"而 R/PR 寄存器不受此影响。\n"
-            f"请检查：\n"
-            f"① 控制器固件/软件版本是否支持远程访问P寄存器（program_pose接口）；\n"
-            f"② 防火墙或网络策略是否屏蔽了 {P_SERVICE_PORT} 端口。"
-        ) from exc
+        gbt_raise("GBT_P_SERVICE_UNREACHABLE")
 
 
 def _safe_disconnect(arm: Any) -> None:
@@ -401,26 +455,119 @@ def verify_connect(conn: Dict[str, Any]) -> Dict[str, Any]:
         arm = connect_arm(**conn)
     except Exception as exc:
         log_py(f"verify_connect exception: {exc!r}")
-        return {"ok": False, "message": str(exc)}
+        return {"ok": False, "code": "GBT_CONNECT_FAILED", "message": str(exc)}
     _safe_disconnect(arm)
     log_py("verify_connect disconnected")
-    return {"ok": True, "message": "连接成功"}
+    return {"ok": True, "code": "connect_ok"}
 
 
-def read_r(arm, indexes: List[int]) -> List[Dict[str, Any]]:
+def read_r(arm, indexes: List[int], progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with redirect_sdk_stdout_to_stderr():
-        for idx in indexes:
+        for pos, idx in enumerate(indexes, start=1):
+            # 先上报“正在读取第 pos 条”，再实际读取；matched 为此前已匹配条数。
+            if progress:
+                progress(pos, len(indexes), len(rows))
             value, ret = arm.register.read_R(idx)
             if ret == StatusCodeEnum.OK:
                 rows.append({"type": "R", "ID": idx, "value": round3(value)})
     return rows
 
 
-def read_pr(arm, indexes: List[int]) -> List[Dict[str, Any]]:
+def read_pr(arm, indexes: List[int], progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with redirect_sdk_stdout_to_stderr():
-        for idx in indexes:
+        for step, idx in enumerate(indexes, start=1):
+            if progress:
+                progress(step, len(indexes), len(rows))
+            try:
+                pose, ret = arm.register.read_PR(idx)
+            except Exception as exc:
+                log_py(f"read_pr skip id={idx} exc={exc!r}")
+                continue
+            if ret == StatusCodeEnum.OK:
+                try:
+                    position = pose.poseRegisterData.cartData.position
+                    coord = _coord_from_pose_register(pose)
+                    rows.append(
+                        {
+                            "TYPE": "PR",
+                            "ID": idx,
+                            "X": round3(position.x),
+                            "Y": round3(position.y),
+                            "Z": round3(position.z),
+                            "A": round3(position.a),
+                            "B": round3(position.b),
+                            "C": round3(position.c),
+                            "coord": coord,
+                        }
+                    )
+                except Exception as exc:
+                    log_py(f"read_pr skip malformed id={idx} exc={exc!r}")
+    return rows
+
+
+def read_p(arm, program_name: str, indexes: List[int], progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    with redirect_sdk_stdout_to_stderr():
+        for step, idx in enumerate(indexes, start=1):
+            if progress:
+                progress(step, len(indexes), len(rows))
+            try:
+                pose, ret = arm.program_pose.read(program_name, idx)
+            except Exception as exc:
+                log_py(f"read_p skip program={program_name!r} id={idx} exc={exc!r}")
+                continue
+            if ret == StatusCodeEnum.OK:
+                try:
+                    position = pose.poseData.cartData.baseCart.position
+                    tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
+                    uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
+                    coord = _coord_from_pose(pose)
+                    rows.append(
+                        {
+                            "Type": "P",
+                            "ID": idx,
+                            "X": round3(position.x),
+                            "Y": round3(position.y),
+                            "Z": round3(position.z),
+                            "A": round3(position.a),
+                            "B": round3(position.b),
+                            "C": round3(position.c),
+                            "TF": tf,
+                            "UF": uf,
+                            "Coord": coord,
+                        }
+                    )
+                except Exception as exc:
+                    log_py(f"read_p skip malformed program={program_name!r} id={idx} exc={exc!r}")
+    return rows
+
+
+def read_r_all_scan(arm, progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    consec_fail = 0
+    idx = READ_ALL_FIRST_ID
+    with redirect_sdk_stdout_to_stderr():
+        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
+            value, ret = arm.register.read_R(idx)
+            if ret == StatusCodeEnum.OK:
+                rows.append({"type": "R", "ID": idx, "value": round3(value)})
+                consec_fail = 0
+            else:
+                consec_fail += 1
+            if progress:
+                progress(idx, None, len(rows))
+            idx += 1
+    return rows
+
+
+def read_pr_all_scan(arm, progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    consec_fail = 0
+    idx = READ_ALL_FIRST_ID
+    with redirect_sdk_stdout_to_stderr():
+        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
             pose, ret = arm.register.read_PR(idx)
             if ret == StatusCodeEnum.OK:
                 pos = pose.poseRegisterData.cartData.position
@@ -438,108 +585,68 @@ def read_pr(arm, indexes: List[int]) -> List[Dict[str, Any]]:
                         "coord": coord,
                     }
                 )
-    return rows
-
-
-def read_p(arm, program_name: str, indexes: List[int]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    with redirect_sdk_stdout_to_stderr():
-        for idx in indexes:
-            pose, ret = arm.program_pose.read(program_name, idx)
-            if ret == StatusCodeEnum.OK:
-                pos = pose.poseData.cartData.baseCart.position
-                tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
-                uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
-                coord = _coord_from_pose(pose)
-                rows.append(
-                    {
-                        "Type": "P",
-                        "ID": idx,
-                        "X": round3(pos.x),
-                        "Y": round3(pos.y),
-                        "Z": round3(pos.z),
-                        "A": round3(pos.a),
-                        "B": round3(pos.b),
-                        "C": round3(pos.c),
-                        "TF": tf,
-                        "UF": uf,
-                        "Coord": coord,
-                    }
-                )
-    return rows
-
-
-def read_r_all_scan(arm) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    consec_fail = 0
-    idx = READ_ALL_FIRST_ID
-    with redirect_sdk_stdout_to_stderr():
-        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
-            value, ret = arm.register.read_R(idx)
-            if ret == StatusCodeEnum.OK:
-                rows.append({"type": "R", "ID": idx, "value": round3(value)})
                 consec_fail = 0
             else:
                 consec_fail += 1
+            if progress:
+                progress(idx, None, len(rows))
             idx += 1
     return rows
 
 
-def read_pr_all_scan(arm) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    consec_fail = 0
-    idx = READ_ALL_FIRST_ID
-    with redirect_sdk_stdout_to_stderr():
-        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
-            pose, ret = arm.register.read_PR(idx)
-            if ret == StatusCodeEnum.OK:
-                pos = pose.poseRegisterData.cartData.position
-                coord = _coord_from_pose_register(pose)
-                rows.append(
-                    {
-                        "TYPE": "PR",
-                        "ID": idx,
-                        "X": round3(pos.x),
-                        "Y": round3(pos.y),
-                        "Z": round3(pos.z),
-                        "A": round3(pos.a),
-                        "B": round3(pos.b),
-                        "C": round3(pos.c),
-                        "coord": coord,
-                    }
-                )
-                consec_fail = 0
-            else:
-                consec_fail += 1
-            idx += 1
-    return rows
-
-
-def read_p_all_scan(arm, program_name: str) -> List[Dict[str, Any]]:
-    """使用 read_all_poses 一次性获取程序中所有P点（SDK 4.4.3）。"""
+def read_p_pose_map(
+    arm,
+    program_name: str,
+    id_filter: Optional[Set[int]] = None,
+    strict: bool = True,
+) -> Dict[int, Any]:
+    """Read all program poses and index them by valid pose.id."""
     with redirect_sdk_stdout_to_stderr():
         poses, ret = arm.program_pose.read_all_poses(program_name)
     if ret != StatusCodeEnum.OK:
-        raise RuntimeError(
-            f"读取程序 {program_name!r} 中所有P点失败: {status_text(ret)}"
-        )
-    rows: List[Dict[str, Any]] = []
+        log_py(f"read_p_pose_map failed program={program_name!r}: {status_text(ret)}")
+        if not strict:
+            raise RuntimeError(status_text(ret))
+        gbt_raise("GBT_INTERNAL_ERROR")
+    out: Dict[int, Any] = {}
     for pose in poses:
+        idx = _normalize_id(getattr(pose, "id", None))
+        if idx is None:
+            log_py(f"read_p_pose_map skip invalid pose id={getattr(pose, 'id', '?')!r}")
+            continue
+        if id_filter is not None and idx not in id_filter:
+            continue
+        out[idx] = pose
+    return out
+
+
+def read_p_all_scan(
+    arm,
+    program_name: str,
+    progress: Optional[ProgressCallback] = None,
+    id_filter: Optional[Set[int]] = None,
+) -> List[Dict[str, Any]]:
+    """使用 read_all_poses 一次性获取程序中所有P点（SDK 4.4.3）。"""
+    pose_map = read_p_pose_map(arm, program_name, id_filter)
+    rows: List[Dict[str, Any]] = []
+    total = len(pose_map)
+    for step, idx in enumerate(sorted(pose_map), start=1):
+        pose = pose_map[idx]
         try:
-            pos = pose.poseData.cartData.baseCart.position
+            position = pose.poseData.cartData.baseCart.position
             tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
             uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
             coord = _coord_from_pose(pose)
             rows.append(
                 {
                     "Type": "P",
-                    "ID": pose.id,
-                    "X": round3(pos.x),
-                    "Y": round3(pos.y),
-                    "Z": round3(pos.z),
-                    "A": round3(pos.a),
-                    "B": round3(pos.b),
-                    "C": round3(pos.c),
+                    "ID": idx,
+                    "X": round3(position.x),
+                    "Y": round3(position.y),
+                    "Z": round3(position.z),
+                    "A": round3(position.a),
+                    "B": round3(position.b),
+                    "C": round3(position.c),
                     "TF": tf,
                     "UF": uf,
                     "Coord": coord,
@@ -547,6 +654,8 @@ def read_p_all_scan(arm, program_name: str) -> List[Dict[str, Any]]:
             )
         except Exception as exc:
             log_py(f"read_p_all_scan skip pose id={getattr(pose, 'id', '?')} exc={exc!r}")
+        if progress:
+            progress(step, total, len(rows))
     return rows
 
 
@@ -564,28 +673,29 @@ def read_preview(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     # P 寄存器使用独立 HTTP 端口，提前检查可达性，避免返回误导性的空列表。
     if reg_type == "P":
         if not program_name:
-            raise RuntimeError("读取 P 点时 programName 不能为空。")
+            gbt_raise("GBT_P_READ_NEED_PROGRAM")
         _check_p_service(controller_ip)
 
     arm = connect_arm(**conn)
+    progress = lambda current, total, matched: emit_progress("read", current, total, matched)
     try:
         if mode == "all":
             if reg_type == "R":
-                rows = read_r_all_scan(arm)
+                rows = read_r_all_scan(arm, progress)
             elif reg_type == "PR":
-                rows = read_pr_all_scan(arm)
+                rows = read_pr_all_scan(arm, progress)
             elif reg_type == "P":
-                rows = read_p_all_scan(arm, program_name)
+                rows = read_p_all_scan(arm, program_name, progress)
             else:
-                raise RuntimeError("不支持的寄存器类型。")
+                gbt_raise("GBT_UNSUPPORTED_REGISTER_TYPE")
         elif reg_type == "R":
-            rows = read_r(arm, build_indexes(selector))
+            rows = read_r(arm, build_indexes(selector), progress)
         elif reg_type == "PR":
-            rows = read_pr(arm, build_indexes(selector))
+            rows = read_pr(arm, build_indexes(selector), progress)
         elif reg_type == "P":
-            rows = read_p(arm, program_name, build_indexes(selector))
+            rows = read_p(arm, program_name, build_indexes(selector), progress)
         else:
-            raise RuntimeError("不支持的寄存器类型。")
+            gbt_raise("GBT_UNSUPPORTED_REGISTER_TYPE")
         log_py(f"read_preview ok row_count={len(rows)}")
         return {"rows": rows}
     finally:
@@ -647,15 +757,22 @@ def write_pr(arm, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
     with redirect_sdk_stdout_to_stderr():
         ret = unwrap_status(arm.register.write_PR(pose_register))
     if ret != StatusCodeEnum.OK:
+        if status_indicates_exists(ret):
+            if policy == "skip":
+                return True, "skip"
+            return False, "ID already exists on robot"
         return False, status_text(ret)
     return True, "write"
 
 
 def write_p(arm, program_name: str, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
     idx = int(row["ID"])
-    with redirect_sdk_stdout_to_stderr():
-        pose, ret = arm.program_pose.read(program_name, idx)
-    exists = ret == StatusCodeEnum.OK
+    try:
+        pose_map = read_p_pose_map(arm, program_name, {idx}, strict=False)
+    except RuntimeError as exc:
+        return False, str(exc)
+    pose = pose_map.get(idx)
+    exists = pose is not None
     if exists and policy == "skip":
         return True, "skip"
     if exists:
@@ -720,7 +837,7 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     # P 寄存器使用独立 HTTP 端口，提前检查可达性，避免写入时抛出晦涩的 SDK 异常。
     if reg_type == "P":
         if not program_name:
-            raise RuntimeError("写入 P 点时 programName 不能为空。")
+            gbt_raise("GBT_P_WRITE_NEED_PROGRAM")
         _check_p_service(controller_ip)
 
     arm = connect_arm(**conn)
@@ -728,7 +845,11 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     skipped = 0
     failed: List[str] = []
     try:
-        for row in rows:
+        total = len(rows)
+        for pos, row in enumerate(rows, start=1):
+            # 在写入当前寄存器之前先上报进度：current=正在写入的序号，matched=此前已完成的条数。
+            # 这样前端会显示 “正在写入 1/10，已完成 0 条” -> “正在写入 2/10，已完成 1 条” ...
+            emit_progress("write", pos, total, success + skipped)
             if reg_type == "R":
                 ok, tag = write_r(arm, row, policy)
             elif reg_type == "PR":
@@ -736,7 +857,7 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
             elif reg_type == "P":
                 ok, tag = write_p(arm, program_name, row, policy)
             else:
-                raise RuntimeError("不支持的寄存器类型。")
+                gbt_raise("GBT_UNSUPPORTED_REGISTER_TYPE")
 
             if ok and tag == "skip":
                 skipped += 1
@@ -757,7 +878,7 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
         ):
             return {
                 "ok": False,
-                "message": "找不到对应程序，请检查程序名是否正确。",
+                "code": "GBT_PROGRAM_NOT_FOUND",
                 "details": [],
             }
         log_py(
@@ -765,13 +886,13 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
         )
         return {
             "ok": False,
-            "message": f"完成：成功 {success}，跳过 {skipped}，失败 {len(failed)}。",
+            "stats": {"success": success, "skipped": skipped, "failed": len(failed)},
             "details": failed,
         }
     log_py(f"apply_rows end ok success={success} skipped={skipped}")
     return {
         "ok": True,
-        "message": f"完成：成功 {success}，跳过 {skipped}，失败 0。",
+        "stats": {"success": success, "skipped": skipped, "failed": 0},
         "details": [],
     }
 
@@ -788,9 +909,9 @@ def _cell_for_export(row: Dict[str, Any], key: str, reg_type: str) -> Any:
 
 def export_excel(register_type: str, rows: List[Dict[str, Any]], output_path: str) -> Dict[str, Any]:
     if Workbook is None:
-        raise RuntimeError(
-            f"未安装 openpyxl：{_OPENPYXL_ERR!r}" if _OPENPYXL_ERR else "未安装 openpyxl。"
-        )
+        if _OPENPYXL_ERR is not None:
+            log_py(f"openpyxl missing: {_OPENPYXL_ERR!r}")
+        gbt_raise("GBT_OPENPYXL_MISSING")
     log_py(f"export_excel begin type={register_type!r} rows={len(rows)} path_len={len(output_path)}")
     headers = make_headers(register_type)
     output_file = Path(output_path)
@@ -817,7 +938,7 @@ def export_excel(register_type: str, rows: List[Dict[str, Any]], output_path: st
 
     wb.save(output_file)
     log_py(f"export_excel ok path={output_file} write_only={use_write_only}")
-    return {"ok": True, "message": f"已保存到 {output_file}"}
+    return {"ok": True, "code": "export_saved"}
 
 
 def fetch_robot_meta(conn: Dict[str, Any]) -> Dict[str, Any]:
@@ -843,9 +964,9 @@ def fetch_robot_meta(conn: Dict[str, Any]) -> Dict[str, Any]:
 
 def export_template(register_type: str, output_path: str) -> Dict[str, Any]:
     if Workbook is None:
-        raise RuntimeError(
-            f"未安装 openpyxl：{_OPENPYXL_ERR!r}" if _OPENPYXL_ERR else "未安装 openpyxl。"
-        )
+        if _OPENPYXL_ERR is not None:
+            log_py(f"openpyxl missing: {_OPENPYXL_ERR!r}")
+        gbt_raise("GBT_OPENPYXL_MISSING")
     log_py(f"export_template begin type={register_type!r} path_len={len(output_path)}")
     wb = Workbook()
     ws = wb.active
@@ -855,7 +976,7 @@ def export_template(register_type: str, output_path: str) -> Dict[str, Any]:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_file)
     log_py(f"export_template ok path={output_file}")
-    return {"ok": True, "message": f"模板已保存到 {output_file}"}
+    return {"ok": True, "code": "template_saved"}
 
 
 # ---------- 入口 ------------------------------------------------------------
@@ -877,7 +998,7 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
         return fetch_robot_meta(_extract_connect_params(payload))
     if action == "verify_connect":
         return verify_connect(_extract_connect_params(payload))
-    raise RuntimeError(f"未知 action: {action!r}")
+    gbt_raise("GBT_INTERNAL_ERROR")
 
 
 def main() -> int:
@@ -885,7 +1006,7 @@ def main() -> int:
         payload = read_payload()
     except Exception as exc:
         log_py(f"read_payload failed: {exc!r}")
-        emit_frame({"ok": False, "code": "BAD_PAYLOAD", "message": f"Sidecar 入参解析失败: {exc}"})
+        emit_frame({"ok": False, "code": "GBT_INTERNAL_ERROR", "message": "GBT_INTERNAL_ERROR"})
         return 0
 
     action = payload.get("action", "?")
@@ -893,22 +1014,18 @@ def main() -> int:
     try:
         result = _dispatch(payload)
     except Exception as exc:
-        log_py(f"main action={action!r} exception: {exc!r}\n{traceback.format_exc()}")
-        emit_frame(
-            {
-                "ok": False,
-                "code": "ACTION_FAILED",
-                "message": str(exc),
-            }
-        )
+        code = sidecar_error_code(exc)
+        if code == "GBT_INTERNAL_ERROR":
+            log_py(f"main action={action!r} exception: {exc!r}\n{traceback.format_exc()}")
+        emit_frame({"ok": False, "code": code, "message": code})
         return 0
 
     if not isinstance(result, dict):
         emit_frame(
             {
                 "ok": False,
-                "code": "BAD_RESULT",
-                "message": "Sidecar 内部错误：dispatch 返回非字典。",
+                "code": "GBT_INTERNAL_ERROR",
+                "message": "GBT_INTERNAL_ERROR",
             }
         )
         return 0

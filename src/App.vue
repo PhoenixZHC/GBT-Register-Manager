@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NAlert,
@@ -19,9 +19,10 @@ import {
   useDialog,
   useMessage
 } from "naive-ui";
-import type { DataTableColumns } from "naive-ui";
-import type { ConflictPolicy, ConnectionState, ReadMode, RegisterType } from "./types";
+import type { DataTableColumns, MessageReactive } from "naive-ui";
+import type { CommonResponse, ConflictPolicy, ConnectionState, ReadMode, RegisterProgressEvent, RegisterType } from "./types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   applyRegisters,
@@ -45,10 +46,10 @@ import { setStoredLocale, SUPPORTED_LOCALES, type AppLocale } from "./i18n";
 
 type FeatureKey = "batchCreate" | "dataImport" | "dataExport" | "logDataExport" | "pluginInstall";
 
-/** 调试入口：输入该 IP 并点连接，跳过真实机器人连接，仅用于界面与流程验证 */
+/** 闁荤姴顑呴崯鎶芥儊椤栫偛绀傞柕澶堝劚缂嶆捇鏌ㄥ☉娆庝孩缂侀鍙冨畷妤呭Ψ椤垵娈?IP 濡ょ姷鍋涙晶搴ㄥ磻閿濆棙浜ら柣鎰綑婢跺秹鏌ㄥ☉妯肩劮闁绘埊闄勫濠氬炊閳哄倸鐒搁柣搴℃贡閸嬬偛鈹冮埀顒勬煕閿濆啫濡烘慨鐟邦槹濞煎鎮欓弶鎴濐槻闂佹寧绋戞總鏃傚垝鎼淬劍鍋ㄩ柕濞垮€楅懝楣冩煟閿濆懐鐒告繛鑲╁缁嬪鎯旈姀顫亰缂備礁顑呴澶愭偘濞嗘垶瀚?*/
 const DEBUG_BYPASS_IP = "255.255.255.255";
 
-/** 简单 IPv4 校验：四段 0-255，允许 DEBUG_BYPASS_IP */
+/** 缂備胶濮崑鎾绘煕?IPv4 闂佸搫绋勭换婵嬫偘濞嗘挻鏅慨姗嗗墯绾捐姤绻?0-255闂佹寧绋戦懟顖炲储閹寸姵濯?DEBUG_BYPASS_IP */
 function isValidIPv4(ip: string): boolean {
   if (ip === DEBUG_BYPASS_IP) return true;
   const parts = ip.split(".");
@@ -60,7 +61,7 @@ function isValidIPv4(ip: string): boolean {
   });
 }
 
-/** 与后端 IPC 错误码一致，供多语言映射。 */
+/** 婵炴垶鎸告鎼佸箖濡ゅ啰鍗?IPC 闂備焦瀵ч悷銊╊敋閵堝鍎樺ù锝夘棑椤忛亶鏌ら悿顖涘涧缂佽鲸绻冪粭鐔封槈濮楀棙鈻奸柣鐘叉祩閸欌偓闁宠鐗撳浼存偐閼碱剚顔忛梺?*/
 const UNSUPPORTED_ROBOT_MODEL_CODE = "GBT_UNSUPPORTED_ROBOT_MODEL";
 const PLUGIN_NEEDS_TEACH_PANEL_IP_CODE = "GBT_PLUGIN_NEEDS_TEACH_PANEL_IP";
 const PLUGIN_DEBUG_BYPASS_CODE = "GBT_PLUGIN_DEBUG_BYPASS";
@@ -72,7 +73,7 @@ function ipcMessageIsCode(e: unknown, code: string): boolean {
   return m === code || m.includes(code);
 }
 
-/** 统一异常→message 兜底，避免 try/finally 中未捕获导致静默失败。 */
+/** 缂傚倷鑳堕崰宥囩博閺夋埈鍤曢柛灞炬皑閸╂鏌嶉锝呅昬ssage 闂佺绻戠划宀€鑺遍幎鑺ユ櫖鐎光偓閸曨亞绱氶梺?try/finally 婵炴垶鎼╅崢钘夛耿椤撱垹绠查柡鍥ｂ偓宕囶唵闁诲簼绲绘竟鍫ュ吹瑜斿Λ鍐ㄢ枎閹捐泛绗℃繝銏″劶缁墽鎲撮敃鍌毼?*/
 function errMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "string") return e;
@@ -89,21 +90,33 @@ function isUnsupportedRobotModelError(e: unknown): boolean {
 
 const { t, te, locale } = useI18n();
 
-function formatRobotModelOrConnectError(e: unknown): string {
+function formatIpcError(e: unknown): string {
   if (isUnsupportedRobotModelError(e)) return t("messages.unsupportedRobotModel");
   if (ipcMessageIsCode(e, PLUGIN_NEEDS_TEACH_PANEL_IP_CODE)) return t("pluginInstall.errorNeedsTeachPanelIp");
   if (ipcMessageIsCode(e, PLUGIN_DEBUG_BYPASS_CODE)) return t("pluginInstall.errorDebugBypass");
   if (ipcMessageIsCode(e, PLUGIN_NO_EXT_FILE_CODE)) return t("pluginInstall.errorNoExtFile");
   if (ipcMessageIsCode(e, PLUGIN_NO_WHL_FILE_CODE)) return t("pluginInstall.errorNoWhlFile");
-  return errMessage(e);
+  const m = errMessage(e);
+  const errKey = `errors.${m}`;
+  if (te(errKey)) return t(errKey);
+  return t("errors.GBT_INTERNAL_ERROR");
+}
+
+function formatRobotModelOrConnectError(e: unknown): string {
+  return formatIpcError(e);
 }
 
 const message = useMessage();
 const dialog = useDialog();
+let progressMessageReactive: MessageReactive | undefined;
+let unlistenRegisterProgress: UnlistenFn | undefined;
+let progressListenerDisposed = false;
+let activeProgressOp = 0;
+let activeSessionId = 0;
 
 type RegisterConflictChoice = "overwrite" | "skip" | "stop";
 
-/** 冲突时三选一：覆盖 / 跳过已存在 / 停止整次任务（关窗或 Esc 视为停止） */
+/** 闂佸憡鍔樼亸娆撴偘婵犲洤绫嶉柡鍫㈡暩閻熷繘姊洪銏╂Х缂佹梹鎸抽弫宥咁潩閹颁焦鑸归梺?/ 闁荤姴鎼悿鍥╂崲閸愵煈鍟呴柟缁樺笧閹界娀鏌?/ 闂佺顑嗙划宥夘敆濞戙垹鏋侀悗娑欙供閸嬔兠归悩渚殭濠殿喚鍠栭弫宥夊醇濠靛棗缍樼紓浣瑰姈椤ㄥ棝宕?Esc 闁荤喐鐟ュΛ鏃傛嫻閻旂厧纾绘繝濠傚閸撻箖鏌?*/
 function promptRegisterConflict(content: string): Promise<RegisterConflictChoice> {
   return new Promise((resolve) => {
     let settled = false;
@@ -142,16 +155,17 @@ function promptRegisterConflict(content: string): Promise<RegisterConflictChoice
 }
 
 const loading = ref(false);
-/** 控制柜 IP（必填）。 */
+const connectBusy = ref(false);
+/** 闂佺鐭囬崘銊у幀闂?IP闂佹寧绋戦悧鍡欐崲閳ь剙鈹戞径妯轰壕缂佽鲸宀告俊?*/
 const ip = ref("");
-/** 示教器 IP（可选；工业机器人通常需要填，四轴无 TP 时留空）。 */
+/** 缂備讲鍋撻柣鎴炆戝▓宀勬煕?IP闂佹寧绋戦悧鍡氥亹閺屻儲鐒诲鑸电〒楠炪垻鈧鎮堕崕鎵箔閻旂厧瀚夐柛婵嗗閻濄倕霉濠婂嫭銇濋柍褜鍓氶懝楣冩偉閸洘顥嗛柍褜鍓涢幉鐗堟媴闂堚晝绋忛梺鎸庣☉閼活垰煤閹惧瓨濮滈悗娑櫳戦敓?TP 闂佸搫鍟晶搴ㄥ汲閳ь剛绱掑畝鈧亸銊ф濮樿泛违?*/
 const teachPanelIp = ref("");
 /**
- * 恒为 true：始终使用 SDK 本地代理（Arm(local_proxy=True)）。
- * 根据 SDK 手册 4.1.1：
- *  - 无示教器（四轴等）或软件 < v7.7 时必须开启；
- *  - 有示教器/新固件场景下开启同样可用，不影响功能。
- * 为避免用户困扰，界面不再暴露此开关。
+ * 闂佽鍘界敮濠勬嫻?true闂佹寧绋掗懝楣冿綖閹邦喚纾奸柛顐ｇ矊閳诲繘鏌?SDK 闂佸搫鐗滈崜娆忥耿鐎涙顩烽柨婵嗘处閸婄偤鏌ㄥ☉妯荤rm(local_proxy=True)闂佹寧绋戦ˇ顓㈠焵?
+ * 闂佸搫绉烽～澶婄暤?SDK 闂佸綊娼ч鍛村船?4.1.1闂?
+ *  - 闂佸搫鍟版慨鐑藉Φ濮樿泛鏋佹繛鍡楃箲閻濄倝鏌ㄥ☉妯煎婵炲弶鎸诲顏嗏偓闈涙憸閹煎ジ鏌ㄥ☉姗嗘Ч闁搞劊鍔嶅顏堫敍濞嗘劦鍋?< v7.7 闂佸搫鍟冲▔娑氭崲閳ь剙顪冮妶鍫殭缂佽鲸鍨垮畷銉╊敍閵堝洤鑰?
+ *  - 闂佸搫鐗嗛ˇ閬嶅Φ濮樿泛鏋佹繛鍡楃箲閻?闂佸搫鍊瑰妯好归幇顓狀浄閻犺櫣鍎ょ花姘舵煛閸滀礁鐏熺紒妤€鎳庨锝夊焵椤掑嫬瑙︽い鏍ㄧ閸婇亶鏌″鍛Щ鐟滅増鐓￠幃浠嬧€﹂幒鏃傤槷婵炴垶鎸哥粔瀛樼附閺嶎厼浼犵€广儱鎳庨～鐘绘煠閸愬樊娼熼柍?
+ * 婵炴垶鎸诲鑺ュ閳哄懎绀傜€广儱娲﹂弳蹇涙煙閺夋垵妲绘繛鎻掔埣楠炲秶鏁鍓ь槷闂佷紮绲介惌鍌氼焽閻楀牏鈻旂€广儱鎳庨弲娆撴煛閸℃ɑ灏︽繝鈧捄渚桨闁靛牆鎳愮壕濠氭煕韫囨洖浠洪柍?
  */
 const LOCAL_PROXY_ALWAYS_ON = true;
 const recentIps = ref<string[]>([]);
@@ -159,9 +173,9 @@ const recentPickerKey = ref(0);
 const connection = ref<ConnectionState>({ connected: false, ip: "", message: "" });
 const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
-/** 机器人侧 Agilebot.Robot.SDK.A 版本（SSH：`cd /opt/python3.12/bin && ./pip3.12 list`，展示为 `+` 前主版本）。 */
+/** 闂佸搫鐗嗛幖顐⑩枍閹烘挾顩查弶鐐靛濞?Agilebot.Robot.SDK.A 闂佺粯顨呴悧濠傦耿娴煎瓨鏅柛锔惧房H闂佹寧绋掗悺鐚歞 /opt/python3.12/bin && ./pip3.12 list`闂佹寧绋戦懟顖炴儓瀹ュ洨鐭嗛弶鐐村缁€?`+` 闂佸憡鎸哥粔宕団偓闈涚焸閹囧醇閻斿憡瀚抽梺鎸庣☉椤︻參鍩€?*/
 const robotSdkVersion = ref("");
-const DEFAULT_APP_VERSION = "1.2.3";
+const DEFAULT_APP_VERSION = "1.2.8";
 const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
@@ -178,49 +192,15 @@ const currentLangLabel = computed(() => {
 });
 
 const createButtonText = computed(() => {
-  if (!createLoading.value) return t("create.start");
-  // 先检查 key 是否存在，避免触发 intlify 缺键告警。
-  if (!te("create.running")) {
-    const fallbackByLocale: Record<AppLocale, string> = {
-      zh: "新建中",
-      en: "Creating...",
-      ja: "作成中...",
-      ko: "생성 중...",
-      ru: "Создание..."
-    };
-    return fallbackByLocale[locale.value as AppLocale] ?? "Creating...";
-  }
-  return t("create.running");
+  return createLoading.value ? t("create.running") : t("create.start");
 });
 
 const exportReadButtonText = computed(() => {
-  if (!ioReadLoading.value) return t("export.readPreview");
-  if (!te("export.reading")) {
-    const fallbackByLocale: Record<AppLocale, string> = {
-      zh: "读取中",
-      en: "Reading...",
-      ja: "読み取り中...",
-      ko: "읽는 중...",
-      ru: "Чтение..."
-    };
-    return fallbackByLocale[locale.value as AppLocale] ?? "Reading...";
-  }
-  return t("export.reading");
+  return ioReadLoading.value ? t("export.reading") : t("export.readPreview");
 });
 
 const importApplyButtonText = computed(() => {
-  if (!ioApplyLoading.value) return t("import.applyRobot");
-  if (!te("import.applying")) {
-    const fallbackByLocale: Record<AppLocale, string> = {
-      zh: "导入中",
-      en: "Importing...",
-      ja: "インポート中...",
-      ko: "가져오는 중...",
-      ru: "Импорт..."
-    };
-    return fallbackByLocale[locale.value as AppLocale] ?? "Importing...";
-  }
-  return t("import.applying");
+  return ioApplyLoading.value ? t("import.applying") : t("import.applyRobot");
 });
 
 function onLangSelect(key: string) {
@@ -243,10 +223,10 @@ function applyChromeLocale() {
   }
   const title = t("app.title");
   try {
-    // 权限不足时 setTitle 会 reject，显式捕获避免控制台出现未处理 Promise 错误。
+    // 闂佸搫顦崯鏉戭瀶閻戞鈻旂€广儱鐗嗛崰鏇㈡煛?setTitle 婵?reject闂佹寧绋戦張顒€螣婢跺鍤曢煫鍥ㄦ煥缁€瀣煠閸撗冨幋濞村皷鏅犲畷妤€顓奸崱妞剧帛闂佸憡甯熷▔娑溿亹閹绢喖绀勯柧蹇曟嚀缁犳盯鏌￠崼顐＄盎妞わ腹鏅犻幃?Promise 闂備焦瀵ч悷銊╊敋閵堝违?
     void getCurrentWindow().setTitle(title).catch(() => {});
   } catch {
-    /* 非 Tauri（如仅 vite 浏览器）无此 API */
+    /* 闂?Tauri闂佹寧绋戦悧鍡涖€呰缁?vite 濠电偞娼欑换妤咃綖瀹ュ闂い顓熷笧缁€鍡涙煛閸愵亜校妞?API */
   }
   if (typeof document !== "undefined") {
     document.title = title;
@@ -259,7 +239,105 @@ const registerOptions = [
   { label: "PR", value: "PR" }
 ];
 
-// 数据导入导出页
+function localResponseMessage(res: CommonResponse, fallbackKey: string, params: Record<string, unknown> = {}): string {
+  const key = res.code ? `response.${res.code}` : fallbackKey;
+  return te(key) ? t(key, { ...(res.stats ?? {}), count: res.count ?? 0, ...params }) : t(fallbackKey, params);
+}
+
+function applyResultMessage(res: CommonResponse): string {
+  if (!res.ok) {
+    if (res.code && te(`errors.${res.code}`)) return t(`errors.${res.code}`);
+    if (res.stats) return t("messages.applyFailed", res.stats);
+    return localResponseMessage(res, "response.operation_failed");
+  }
+  if (res.stats) return t("messages.applyDone", res.stats);
+  return localResponseMessage(res, "response.operation_failed");
+}
+
+function formatRegisterProgress(payload: RegisterProgressEvent): string {
+  const params = {
+    current: payload.current,
+    total: payload.total ?? "",
+    matched: payload.matched
+  };
+  if (payload.action === "export") {
+    const phase = payload.phase ?? "download";
+    if (phase === "scan") {
+      if (payload.total == null || payload.total === 0) return t("progress.exportStarting");
+      return t("progress.exportScan", params);
+    }
+    if (phase === "zip") return t("progress.exportZip", params);
+    if (payload.total == null || payload.total === 0) return t("progress.exportStarting");
+    return t("progress.exportDownload", params);
+  }
+  if (payload.action === "write") return t("progress.write", params);
+  return payload.total == null ? t("progress.readAll", params) : t("progress.read", params);
+}
+
+function robotSessionId(): number {
+  return connection.value.sessionId ?? 0;
+}
+
+function beginProgressOp(): number {
+  activeSessionId = robotSessionId();
+  activeProgressOp += 1;
+  return activeProgressOp;
+}
+
+function endProgressOp(op: number): void {
+  if (activeProgressOp === op) {
+    activeProgressOp = 0;
+    activeSessionId = 0;
+    hideRegisterProgress();
+  }
+}
+
+function showRegisterProgress(content: string): void {
+  if (activeProgressOp === 0) return;
+  // 复用同一个 loading 提示，仅原地更新文案；避免每次进度都销毁+重建导致弹窗快速闪烁，
+  // 这样用户能看到 1/10 -> 2/10 ... 平滑递增，而不是直接跳到最终结果。
+  if (progressMessageReactive) {
+    progressMessageReactive.content = content;
+    return;
+  }
+  progressMessageReactive = message.loading(content, { duration: 0 });
+}
+
+function hideRegisterProgress(): void {
+  progressMessageReactive?.destroy();
+  progressMessageReactive = undefined;
+}
+
+/**
+ * 结束一次读写进度：把正在显示的进度弹窗“原地切换”成最终结果（如“写入完成”），
+ * 而不是销毁进度弹窗再新建一个结果弹窗，从而避免闪烁、让进度自然过渡到完成提示。
+ * 若当前没有进度弹窗（极快完成或被对话框打断），则退回为普通提示。
+ */
+function finishRegisterProgress(
+  op: number,
+  type: "success" | "error" | "warning" | "info",
+  content: string
+): void {
+  const isActive = activeProgressOp === op;
+  if (isActive && progressMessageReactive) {
+    const reactive = progressMessageReactive;
+    progressMessageReactive = undefined;
+    activeProgressOp = 0;
+    activeSessionId = 0;
+    reactive.type = type;
+    reactive.content = content;
+    const duration = type === "error" ? 5000 : 3000;
+    window.setTimeout(() => reactive.destroy(), duration);
+    return;
+  }
+  if (isActive) endProgressOp(op);
+  if (type === "success") message.success(content);
+  else if (type === "error") message.error(content);
+  else if (type === "warning") message.warning(content);
+  else message.info(content);
+}
+
+// 闂佽桨鑳舵晶妤€鐣垫担琛″亾閻㈤潧甯堕柛娆忔閳ь剛鏁搁崢褔宕甸鐔翠簻?
 const ioType = ref<RegisterType>("R");
 const ioMode = ref<ReadMode>("all");
 const ioStartId = ref(1);
@@ -271,7 +349,7 @@ const ioReadLoading = ref(false);
 const ioApplyLoading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
-// 批量新建页
+// 闂佸綊娼х紞濠囧闯濞差亜妫橀柡澶庢硶缁憋箑顪?
 const createType = ref<RegisterType>("R");
 const createProgramName = ref("");
 const createStartId = ref(1);
@@ -285,11 +363,11 @@ function startOfTodayMs(): number {
   return d.getTime();
 }
 
-/** 日志/数据导出页：所选公历日的本地零点时间戳（供 NDatePicker）。 */
+/** 闂佸搫鍟ㄩ崕杈╂崲?闂佽桨鑳舵晶妤€鐣垫担琛″亾閻㈤潧甯堕柛銈庡幗閵囧嫮鍠婃径宀€鐛ラ梺鍦暯閸嬫捇姊洪銏╂Ц闁告瑦娲熷畷銏ゅ幢濡紮绱氶梺姹囧妼鐎氼厼锕㈡导鏉戞嵍濞寸厧鐡ㄧ粊鈺呮煟閹邦垼娼愭俊鐐插€垮鑽も偓娑櫭悡鍫ユ煥濞戞澧旂紒?NDatePicker闂佹寧绋戦ˇ顓㈠焵?*/
 const exportLogDate = ref<number | null>(startOfTodayMs());
 const logExportBusy = ref(false);
 
-/** 插件安装：本机 .gbtapp / .whl 路径（由系统文件对话框选择）。 */
+/** 闂佸湱绮敮濠傗枎閵忊懇鍋撻悷閭︽Ъ妞ゃ儱锕弫宥咁潩椤撶喐瀚抽梺?.gbtapp / .whl 闁荤姳璀﹂崹鎵閻愮儤鏅柛顐犲灪閺嗙姷绱掗婵嗗惞缂侇喗妞藉顒勫炊閿旂瓔鍋ㄩ柣搴ｆ暩椤㈠﹪鎯侀挊澶樻禆闁糕剝绋堥崑鎾村緞鐎ｎ亶浠撮梺鎸庣☉椤︻參鍩€?*/
 const pluginExtLocalPath = ref("");
 const pluginWhlLocalPath = ref("");
 const pluginExtInstallBusy = ref(false);
@@ -298,19 +376,22 @@ const pluginWhlInstallBusy = ref(false);
 const recentOptions = computed(() => recentIps.value.map((v) => ({ label: v, value: v })));
 const isConnected = computed(() => connection.value.connected);
 
-/** 调试或未连接时禁用 SFTP 导出。 */
+/** 闁荤姴顑呴崯鎶芥儊椤栫偛绠ｉ柡宥冨妽瀵捇寮堕埡鍐ㄤ沪閻㈩垱鎸冲顕€宕滄笟鍥ㄧ煑闂?SFTP 闁诲海鏁搁崢褔宕甸銏犖?*/
 const logExportDisabled = computed(
   () => !isConnected.value || connection.value.ip === DEBUG_BYPASS_IP
 );
-/** 无示教器 IP 时禁用示教器日志导出。 */
+const disconnectDisabled = computed(
+  () => loading.value || logExportBusy.value || pluginExtInstallBusy.value || pluginWhlInstallBusy.value
+);
+/** 闂佸搫鍟版慨鐑藉Φ濮樿泛鏋佹繛鍡楃箲閻?IP 闂佸搫鍟晶搴ㄣ€呴敃鍌涘仺闁靛ě浣风驳闂佽桨鐒﹂悷銉モ枍閹烘绫嶉柕澶堝劤缁犲爼鎮楅悽闈涘付闁搞値鍙冩俊?*/
 const teachPanelLogDisabled = computed(
   () => logExportDisabled.value || !(connection.value.teachPanelIp ?? "").trim()
 );
 
-/** 标题栏示教器 IP（来自会话，与输入框可能不同步）。 */
+/** 闂佸搫绉村ú顓€傛禒瀣唨闊洦娲忔禒娑㈡煛娴ｅ湱鎳冩繛?IP闂佹寧绋戦悧濠傤焽閻㈠憡鍤婃い蹇撳暟缁愭鎮归崶銊х缂佽鲸绻冪粙澶嬫償閵堝洨鐐曢梺绋跨箞閸庢煡銆佺€ｎ喖鐭楁い鏍ㄧ箓閸樻潙鈽夐幘宕囆㈤柟顔芥尭椤垽濡烽婊咁槴闂?*/
 const teachPanelIpDisplay = computed(() => (connection.value.teachPanelIp ?? "").trim());
 
-/** GBT-P/C/S 且未填示教器 IP：不检测 SDK、禁用插件安装（S 可无示教器场景）。 */
+/** GBT-P/C/S 婵炴垶鎸诲鐟帮耿椤撶喓绠欐い鎰╁€戞禒娑㈡煛娴ｅ湱鎳冩繛?IP闂佹寧绋掗惌顔剧箔婢跺á娑㈠焵椤掆偓闇?SDK闂侀潧妫旈懗鍫曘€呴敃鍌涘仺闁靛绠戠徊璇裁归悩鐑樼【闁伙絻鍔庨幉妤呭椽閸愵亞顦㏒ 闂佸憡鐟崹鍗炍涢妶鍥╃焼闁绘垶蓱濞堝矂鏌涢敐鍐ㄥ婵犙€鍋撻梺鍝勬媼閸ㄧ晫妲愬璺何?*/
 const pluginSeriesBlocksTeach = computed(() => {
   if (!isConnected.value || connection.value.ip === DEBUG_BYPASS_IP) return false;
   const m = robotModel.value.trim().toUpperCase();
@@ -343,6 +424,11 @@ watch(activeFeature, (v, prev) => {
     ioRows.value = [];
     ioDetails.value = [];
   }
+});
+
+watch(ioType, () => {
+  ioRows.value = [];
+  ioDetails.value = [];
 });
 
 watch(locale, applyChromeLocale, { immediate: true });
@@ -385,6 +471,7 @@ async function loadRobotHeader() {
 }
 
 async function onConnect() {
+  if (connectBusy.value) return;
   const trimmed = ip.value.trim();
   const tpTrimmed = teachPanelIp.value.trim();
   if (!trimmed) {
@@ -395,11 +482,12 @@ async function onConnect() {
     message.warning(t("messages.invalidIp"));
     return;
   }
-  // 示教器 IP 选填，但只要填了就必须是合法 IPv4。
+  // 缂備讲鍋撻柣鎴炆戝▓宀勬煕?IP 闂備緡鍋勯ˇ顖炴晲閻愮儤鏅悘鐐跺亹缁嬪鏌涘▎妯规捣妞も晪闄勭换鍛搭敃閿涘嫬鏅╅柣蹇撶箰瀹曨剛鎹㈤埀顒€顪冮妶鍥╁笡婵″弶鎮傚畷銉╁醇閻旀亽鈧?IPv4闂?
   if (tpTrimmed && !isValidIPv4(tpTrimmed)) {
     message.warning(t("messages.invalidTeachPanelIp"));
     return;
   }
+  connectBusy.value = true;
   loading.value = true;
   let connectLoadingReactive: { destroy: () => void } | undefined;
   try {
@@ -428,12 +516,14 @@ async function onConnect() {
         }
       }
     } else {
-      message.error(connection.value.message || t("messages.connectFailed"));
+      const m = connection.value.message;
+      message.error(m.startsWith("GBT_") ? formatIpcError(m) : t("messages.connectFailed"));
     }
   } catch (e) {
-    message.error(formatRobotModelOrConnectError(e) || t("messages.connectFailed"));
+    message.error(formatIpcError(e));
   } finally {
     connectLoadingReactive?.destroy();
+    connectBusy.value = false;
     loading.value = false;
   }
 }
@@ -442,12 +532,12 @@ async function onDisconnect() {
   loading.value = true;
   try {
     const res = await disconnectRobot();
-    message.info(res.message);
+    message.info(localResponseMessage(res, "messages.disconnected"));
     robotModel.value = "";
     robotSdkVersion.value = "";
     await refreshConnection();
   } catch (e) {
-    message.error(errMessage(e));
+    message.error(formatIpcError(e));
   } finally {
     loading.value = false;
   }
@@ -462,17 +552,21 @@ async function onReadPreviewIO() {
   if (needProgramForIO.value && !ioProgramName.value.trim()) return message.warning(t("messages.pReadNeedProgram"));
   ioReadLoading.value = true;
   loading.value = true;
+  const progressOp = beginProgressOp();
   try {
     ioRows.value = await readRegisters({
       registerType: ioType.value,
       programName: ioProgramName.value.trim() || undefined,
-      selector: { mode: ioMode.value, startId: ioStartId.value, endId: ioEndId.value }
+      selector: { mode: ioMode.value, startId: ioStartId.value, endId: ioEndId.value },
+      progressOpId: progressOp,
+      sessionId: robotSessionId()
     });
     ioDetails.value = [];
-    message.success(t("messages.readDone", { total: ioRows.value.length }));
+    finishRegisterProgress(progressOp, "success", t("messages.readDone", { total: ioRows.value.length }));
   } catch (e) {
-    message.error(errMessage(e));
+    finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
+    endProgressOp(progressOp);
     ioReadLoading.value = false;
     loading.value = false;
   }
@@ -491,7 +585,7 @@ async function onImportExcel(ev: Event) {
     if (error instanceof ExcelUserError) {
       message.error(t(error.message, error.params ?? {}));
     } else {
-      message.error((error as Error).message);
+      message.error(formatIpcError(error));
     }
   } finally {
     loading.value = false;
@@ -504,10 +598,10 @@ async function onExportIO() {
   loading.value = true;
   try {
     const res = await exportPreviewToExcel(ioType.value, ioRows.value);
-    if (res.message === "已取消保存") return;
-    res.ok ? message.success(res.message) : message.error(res.message);
+    if (res.code === "save_cancelled") return;
+    res.ok ? message.success(localResponseMessage(res, "response.export_saved")) : message.error(localResponseMessage(res, "response.operation_failed"));
   } catch (e) {
-    message.error((e as Error).message || String(e));
+    message.error(formatIpcError(e));
   } finally {
     loading.value = false;
   }
@@ -530,13 +624,17 @@ async function onApplyIO() {
   if (!rowIds.length) return message.warning(t("messages.noValidRegIds"));
   ioApplyLoading.value = true;
   loading.value = true;
+  let progressOp = 0;
   try {
     const start = Math.min(...rowIds);
     const end = Math.max(...rowIds);
+    progressOp = beginProgressOp();
     const existingRows = await readRegisters({
       registerType: ioType.value,
       programName: ioProgramName.value.trim() || undefined,
-      selector: { mode: "range", startId: start, endId: end }
+      selector: { mode: "range", startId: start, endId: end },
+      progressOpId: progressOp,
+      sessionId: robotSessionId()
     });
     const existingIds = new Set<number>();
     for (const row of existingRows) {
@@ -547,6 +645,7 @@ async function onApplyIO() {
     const uniqueImportIds = [...new Set(rowIds)];
     const conflictCount = uniqueImportIds.filter((id) => existingIds.has(id)).length;
     if (conflictCount > 0) {
+      hideRegisterProgress();
       const choice = await promptRegisterConflict(t("conflict.bodyImport", { total: conflictCount }));
       if (choice === "stop") {
         message.info(t("messages.importCancelled"));
@@ -558,18 +657,21 @@ async function onApplyIO() {
       registerType: ioType.value,
       programName: ioProgramName.value.trim() || undefined,
       conflictPolicy,
-      rows: ioRows.value
+      rows: ioRows.value,
+      progressOpId: progressOp,
+      sessionId: robotSessionId()
     });
     if (res.ok) {
       ioDetails.value = [];
-      message.success(res.message);
+      finishRegisterProgress(progressOp, "success", applyResultMessage(res));
     } else {
       ioDetails.value = res.details || [];
-      message.error(res.message);
+      finishRegisterProgress(progressOp, "error", applyResultMessage(res));
     }
   } catch (e) {
-    message.error(errMessage(e));
+    finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
+    if (progressOp) endProgressOp(progressOp);
     ioApplyLoading.value = false;
     loading.value = false;
   }
@@ -579,17 +681,17 @@ async function onExportTemplate() {
   loading.value = true;
   try {
     const res = await exportTemplate(ioType.value);
-    if (res.message === "已取消保存") return;
-    res.ok ? message.success(res.message) : message.error(res.message);
+    if (res.code === "save_cancelled") return;
+    res.ok ? message.success(localResponseMessage(res, "response.template_saved")) : message.error(localResponseMessage(res, "response.operation_failed"));
   } catch (e) {
-    message.error((e as Error).message || String(e));
+    message.error(formatIpcError(e));
   } finally {
     loading.value = false;
   }
 }
 
-function isExportSaveCancelled(resMessage: string): boolean {
-  return resMessage === "已取消保存";
+function isExportSaveCancelled(res: CommonResponse): boolean {
+  return res.code === "save_cancelled";
 }
 
 async function onExportControllerLogsZip() {
@@ -597,16 +699,23 @@ async function onExportControllerLogsZip() {
   const ts = exportLogDate.value;
   if (ts == null) return message.warning(t("logExport.pickDate"));
   logExportBusy.value = true;
+  const progressOp = beginProgressOp();
+  showRegisterProgress(t("progress.exportStarting"));
   try {
     const res = await exportControllerLogsZip({
       controllerIp: connection.value.ip,
-      dateYyyyMmDd: exportDateToYmd(ts)
+      dateYyyyMmDd: exportDateToYmd(ts),
+      sessionId: robotSessionId(),
+      progressOpId: progressOp
     });
-    if (isExportSaveCancelled(res.message)) return;
-    res.ok ? message.success(res.message) : message.error(res.message);
+    if (isExportSaveCancelled(res)) return;
+    res.ok
+      ? finishRegisterProgress(progressOp, "success", localResponseMessage(res, "response.logs_exported"))
+      : finishRegisterProgress(progressOp, "error", localResponseMessage(res, "response.no_logs"));
   } catch (e) {
-    message.error(errMessage(e));
+    finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
+    endProgressOp(progressOp);
     logExportBusy.value = false;
   }
 }
@@ -620,17 +729,24 @@ async function onExportTeachPanelLogsZip() {
   if (ts == null) return message.warning(t("logExport.pickDate"));
   const tp = (connection.value.teachPanelIp ?? "").trim();
   logExportBusy.value = true;
+  const progressOp = beginProgressOp();
+  showRegisterProgress(t("progress.exportStarting"));
   try {
     const res = await exportTeachPanelLogsZip({
       controllerIp: connection.value.ip,
       teachPanelIp: tp,
-      dateYyyyMmDd: exportDateToYmd(ts)
+      dateYyyyMmDd: exportDateToYmd(ts),
+      sessionId: robotSessionId(),
+      progressOpId: progressOp
     });
-    if (isExportSaveCancelled(res.message)) return;
-    res.ok ? message.success(res.message) : message.error(res.message);
+    if (isExportSaveCancelled(res)) return;
+    res.ok
+      ? finishRegisterProgress(progressOp, "success", localResponseMessage(res, "response.logs_exported"))
+      : finishRegisterProgress(progressOp, "error", localResponseMessage(res, "response.no_logs"));
   } catch (e) {
-    message.error(errMessage(e));
+    finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
+    endProgressOp(progressOp);
     logExportBusy.value = false;
   }
 }
@@ -638,13 +754,22 @@ async function onExportTeachPanelLogsZip() {
 async function onExportProgramDataZip() {
   if (logExportDisabled.value) return message.warning(t("messages.needConnect"));
   logExportBusy.value = true;
+  const progressOp = beginProgressOp();
+  showRegisterProgress(t("progress.exportStarting"));
   try {
-    const res = await exportProgramDataZip({ controllerIp: connection.value.ip });
-    if (isExportSaveCancelled(res.message)) return;
-    res.ok ? message.success(res.message) : message.error(res.message);
+    const res = await exportProgramDataZip({
+      controllerIp: connection.value.ip,
+      sessionId: robotSessionId(),
+      progressOpId: progressOp
+    });
+    if (isExportSaveCancelled(res)) return;
+    res.ok
+      ? finishRegisterProgress(progressOp, "success", localResponseMessage(res, "response.program_data_exported"))
+      : finishRegisterProgress(progressOp, "error", localResponseMessage(res, "response.operation_failed"));
   } catch (e) {
-    message.error(errMessage(e));
+    finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
+    endProgressOp(progressOp);
     logExportBusy.value = false;
   }
 }
@@ -653,13 +778,13 @@ async function onPickPluginExtensionFile() {
   try {
     const sel = await open({
       multiple: false,
-      filters: [{ name: "GBT Plugin", extensions: ["gbtapp"] }]
+      filters: [{ name: t("pluginInstall.fileFilterExt"), extensions: ["gbtapp"] }]
     });
     if (sel === null) return;
     if (typeof sel === "string") pluginExtLocalPath.value = sel;
     else if (Array.isArray(sel) && sel[0]) pluginExtLocalPath.value = sel[0];
   } catch (e) {
-    message.error(errMessage(e));
+    message.error(formatIpcError(e));
   }
 }
 
@@ -667,13 +792,13 @@ async function onPickPluginWhlFile() {
   try {
     const sel = await open({
       multiple: false,
-      filters: [{ name: "Python Wheel", extensions: ["whl"] }]
+      filters: [{ name: t("pluginInstall.fileFilterWhl"), extensions: ["whl"] }]
     });
     if (sel === null) return;
     if (typeof sel === "string") pluginWhlLocalPath.value = sel;
     else if (Array.isArray(sel) && sel[0]) pluginWhlLocalPath.value = sel[0];
   } catch (e) {
-    message.error(errMessage(e));
+    message.error(formatIpcError(e));
   }
 }
 
@@ -684,7 +809,7 @@ async function onInstallPluginExtension() {
   pluginExtInstallBusy.value = true;
   try {
     const info = await installRobotExtension(pluginExtLocalPath.value.trim(), robotModel.value || null);
-    message.success(t("pluginInstall.extSuccess", { name: info.name || "—", version: info.version || "—" }));
+    message.success(t("pluginInstall.extSuccess", { name: info.name || "-", version: info.version || "-" }));
   } catch (e) {
     message.error(formatRobotModelOrConnectError(e));
   } finally {
@@ -699,8 +824,8 @@ async function onInstallPluginWhl() {
   pluginWhlInstallBusy.value = true;
   try {
     const res = await installRobotWheel(pluginWhlLocalPath.value.trim(), robotModel.value || null);
-    if (res.ok) message.success(res.message || t("pluginInstall.whlSuccess"));
-    else message.error(res.message);
+    if (res.ok) message.success(localResponseMessage(res, "pluginInstall.whlSuccess"));
+    else message.error(localResponseMessage(res, "response.operation_failed"));
   } catch (e) {
     message.error(formatRobotModelOrConnectError(e));
   } finally {
@@ -748,19 +873,11 @@ function buildCreateRows(start: number, count: number): Record<string, unknown>[
 function formatIdsForConflict(ids: number[]): string {
   if (!ids.length) return "";
   const sorted = [...new Set(ids)].sort((a, b) => a - b);
-  return sorted.map((id) => `ID${id}`).join("、");
+  return sorted.map((id) => `ID${id}`).join(", ");
 }
 
-function createConflictContent(count: number, start: number, end: number, idsText: string): string {
-  // 批量新建冲突文案固定由代码生成，避免旧语言包缓存回退到范围文案。
-  const fallbackByLocale: Record<AppLocale, string> = {
-    zh: `检测到以下寄存器已存在：${idsText}。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次批量新建，不写入任何数据。`,
-    en: `Detected existing registers: ${idsText}. Choose: Overwrite replaces existing values; Skip keeps current robot values; Stop cancels batch creation without writing data.`,
-    ja: `既存レジスタが検出されました：${idsText}。選択：上書きは既存を置き換えます。スキップはロボット側の値を保持します。中止は一括作成を行わずキャンセルします。`,
-    ko: `이미 존재하는 레지스터가 감지되었습니다: ${idsText}. 선택: 덮어쓰기는 기존 값을 교체합니다. 건너뛰기는 로봇의 값을 유지합니다. 중지는 일괄 생성을 취소하고 기록하지 않습니다.`,
-    ru: `Обнаружены существующие регистры: ${idsText}. Выберите: перезапись заменит существующие значения; пропуск сохранит значения на роботе; остановка отменит пакетное создание без записи данных.`
-  };
-  return fallbackByLocale[locale.value as AppLocale] ?? fallbackByLocale.en;
+function createConflictContent(idsText: string): string {
+  return t("conflict.bodyCreate", { ids: idsText });
 }
 
 async function onCreateRegisters() {
@@ -771,12 +888,16 @@ async function onCreateRegisters() {
   if (needProgramForCreate.value && !createProgramName.value.trim()) return message.warning(t("messages.pCreateNeedProgram"));
   createLoading.value = true;
   loading.value = true;
+  let progressOp = 0;
   try {
     const end = start + count - 1;
+    progressOp = beginProgressOp();
     const existing = await readRegisters({
       registerType: createType.value,
       programName: createProgramName.value.trim() || undefined,
-      selector: { mode: "range", startId: start, endId: end }
+      selector: { mode: "range", startId: start, endId: end },
+      progressOpId: progressOp,
+      sessionId: robotSessionId()
     });
     let conflictPolicy: ConflictPolicy = "skip";
     if (existing.length > 0) {
@@ -788,7 +909,8 @@ async function onCreateRegisters() {
         message.error(t("messages.noValidRegIds"));
         return;
       }
-      const choice = await promptRegisterConflict(createConflictContent(existing.length, start, end, idsText));
+      hideRegisterProgress();
+      const choice = await promptRegisterConflict(createConflictContent(idsText));
       if (choice === "stop") {
         message.info(t("messages.createCancelled"));
         return;
@@ -800,31 +922,58 @@ async function onCreateRegisters() {
       registerType: createType.value,
       programName: createProgramName.value.trim() || undefined,
       conflictPolicy,
-      rows
+      rows,
+      progressOpId: progressOp,
+      sessionId: robotSessionId()
     });
     if (res.ok) {
       createDetails.value = [];
-      message.success(res.message);
+      finishRegisterProgress(progressOp, "success", applyResultMessage(res));
     } else {
       createDetails.value = res.details || [];
-      message.error(res.message);
+      finishRegisterProgress(progressOp, "error", applyResultMessage(res));
     }
   } catch (e) {
-    message.error(errMessage(e));
+    finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
+    if (progressOp) endProgressOp(progressOp);
     createLoading.value = false;
     loading.value = false;
   }
 }
 
 onMounted(async () => {
+  const unlisten = await listen<RegisterProgressEvent>("register-progress", (event) => {
+    if (activeProgressOp === 0) return;
+    const { opId, sessionId } = event.payload;
+    if (sessionId == null || sessionId !== activeSessionId) return;
+    if (opId == null || opId !== activeProgressOp) return;
+    showRegisterProgress(formatRegisterProgress(event.payload));
+  });
+  if (progressListenerDisposed) {
+    unlisten();
+    return;
+  }
+  unlistenRegisterProgress = unlisten;
   try {
     appVersion.value = await getAppVersion();
   } catch {
     appVersion.value = DEFAULT_APP_VERSION;
   }
   await refreshConnection();
-  recentIps.value = JSON.parse(localStorage.getItem("gbt_recent_ips") || "[]");
+  try {
+    recentIps.value = JSON.parse(localStorage.getItem("gbt_recent_ips") || "[]");
+  } catch {
+    recentIps.value = [];
+  }
+});
+
+onUnmounted(() => {
+  progressListenerDisposed = true;
+  unlistenRegisterProgress?.();
+  activeProgressOp = 0;
+  activeSessionId = 0;
+  hideRegisterProgress();
 });
 </script>
 
@@ -848,18 +997,18 @@ onMounted(async () => {
             <div class="top-nav-header-col">
               <div class="top-nav-header-line">
                 <span class="top-nav-header-label">{{ t("app.model") }}</span>
-                <span class="top-nav-header-value">{{ robotModel || "—" }}</span>
+                <span class="top-nav-header-value">{{ robotModel || "-" }}</span>
               </div>
             </div>
             <span class="top-nav-meta-sep" aria-hidden="true">|</span>
             <div class="top-nav-header-col">
               <div class="top-nav-header-line">
                 <span class="top-nav-header-label">{{ t("app.robotSdk") }}</span>
-                <span class="top-nav-header-value top-nav-header-value--sdk">{{ robotSdkVersion || "—" }}</span>
+                <span class="top-nav-header-value top-nav-header-value--sdk">{{ robotSdkVersion || "-" }}</span>
               </div>
             </div>
             <span class="top-nav-meta-sep" aria-hidden="true">|</span>
-            <button type="button" class="disconnect-link" :disabled="loading" @click="onDisconnect">
+            <button type="button" class="disconnect-link" :disabled="disconnectDisabled" @click="onDisconnect">
               {{ t("connect.disconnect") }}
             </button>
           </div>
@@ -884,13 +1033,13 @@ onMounted(async () => {
             <n-input
               v-model:value="ip"
               :placeholder="t('connect.controllerIpPlaceholder')"
-              :disabled="loading"
+              :disabled="connectBusy"
               clearable
             />
             <n-input
               v-model:value="teachPanelIp"
               :placeholder="t('connect.teachPanelIpPlaceholder')"
-              :disabled="loading"
+              :disabled="connectBusy"
               clearable
             />
             <n-select
@@ -898,10 +1047,10 @@ onMounted(async () => {
               :options="recentOptions"
               :placeholder="t('connect.recentPlaceholder')"
               clearable
-              :disabled="loading || !recentOptions.length"
+              :disabled="connectBusy || !recentOptions.length"
               @update:value="onPickRecent"
             />
-            <n-button type="primary" :loading="loading" @click="onConnect">{{ t("connect.connect") }}</n-button>
+            <n-button type="primary" :loading="connectBusy" :disabled="connectBusy" @click="onConnect">{{ t("connect.connect") }}</n-button>
           </div>
         </section>
 
@@ -1211,7 +1360,7 @@ onMounted(async () => {
   display: grid;
   gap: 20px;
 }
-/* 导入/导出：上下两块卡片间距收紧，预览区整体上移 */
+/* 闁诲海鏁搁崢褔宕?闁诲海鏁搁崢褔宕甸銏℃櫖婵﹩鍋嗛悷鎰槈閹炬剚鍎庨悶姘朵憾瀹曠螖閳ь剙鐣烽柆宥嗗亱闁搞儺鍓氶敍鐔兼偣閻戞绠栭柡浣告贡濡叉劘顧傜紒杈ㄧ箖閿涙劙宕熼鍛秾闂佸憡鐗滈崕銈夊汲閿濆棙濯撮柟鎹愬皺閻熸劗绱?*/
 .feature-io-stack {
   display: flex;
   flex-direction: column;
@@ -1308,3 +1457,5 @@ onMounted(async () => {
   }
 }
 </style>
+
+

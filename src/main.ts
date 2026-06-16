@@ -11,11 +11,11 @@ app.use(i18n);
 app.mount("#app");
 hideSplash();
 
-// F12 / Ctrl+Shift+I 打开开发者工具（正式包也可用，方便客户反馈问题）
+// Register devtools shortcut in both dev and packaged builds.
 window.addEventListener("keydown", (e) => {
   if (e.key === "F12" || (e.ctrlKey && e.shiftKey && e.key === "I")) {
     e.preventDefault();
-    invoke("open_devtools").catch(() => {/* 老版本不支持时静默忽略 */});
+    invoke("open_devtools").catch(() => {});
   }
 });
 
@@ -30,8 +30,7 @@ function reportRuntimeError(scope: string, payload: unknown) {
   try {
     message.error(String(i18n.global.t("errors.appRuntime")));
   } catch {
-    // 兜底：i18n 尚未就绪时，仍给出一个可见反馈
-    message.error("应用运行出现异常，请查看日志。");
+    message.error("Application runtime error. Check the log.");
   }
 }
 

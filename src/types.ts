@@ -11,6 +11,8 @@ export interface ConnectionState {
   teachPanelIp?: string;
   /** 是否在本机启动代理服务（四轴无 TP 时应为 true）。 */
   localProxy?: boolean;
+  /** 每次成功连接递增；断开为 0。与进度事件、读写请求一并校验。 */
+  sessionId?: number;
   message: string;
 }
 
@@ -65,6 +67,8 @@ export interface ReadRequest {
   registerType: RegisterType;
   programName?: string;
   selector: RangeSelector;
+  progressOpId?: number;
+  sessionId?: number;
 }
 
 export interface ApplyRequest {
@@ -72,12 +76,32 @@ export interface ApplyRequest {
   programName?: string;
   conflictPolicy: ConflictPolicy;
   rows: Record<string, unknown>[];
+  progressOpId?: number;
+  sessionId?: number;
 }
 
 export interface CommonResponse {
   ok: boolean;
   message: string;
+  code?: string;
+  count?: number;
   details?: string[];
+  stats?: {
+    success: number;
+    skipped: number;
+    failed: number;
+  };
+}
+
+export interface RegisterProgressEvent {
+  kind: "progress";
+  action: "read" | "write" | "export";
+  phase?: "scan" | "download" | "zip";
+  current: number;
+  total?: number | null;
+  matched: number;
+  opId?: number;
+  sessionId?: number;
 }
 
 /** 机器人侧信息（由 SDK 读取） */

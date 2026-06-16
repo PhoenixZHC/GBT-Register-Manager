@@ -1,137 +1,52 @@
 export default {
-  app: {
-    title: "捷勃特机器人工具箱",
-    model: "机型",
-    software: "软件",
-    controllerIp: "控制柜：",
-    teachPanelIp: "示教器：",
-    robotSdk: "SDK："
-  },
+  app: { title: "捷勃特机器人工具箱", model: "机型", software: "软件", controllerIp: "控制柜：", teachPanelIp: "示教器：", robotSdk: "SDK:" },
   errors: {
-    appRuntime: "应用运行出现异常，请查看控制台日志。"
+    appRuntime: "应用运行出现异常，请查看控制台日志。",
+    GBT_CONNECTION_LOCK_ERROR: "应用状态异常，请重启后重试。",
+    GBT_ROBOT_OP_BUSY: "正在执行其他操作，请稍候。",
+    GBT_NOT_CONNECTED: "请先连接机器人。",
+    GBT_EMPTY_CONTROLLER_IP: "控制柜 IP 不能为空。",
+    GBT_META_READ_FAILED: "无法读取机器人机型信息，请检查连接与 SDK 状态。",
+    GBT_DEBUG_EXPORT_BLOCKED: "调试模式不支持日志与程序数据导出。",
+    GBT_SESSION_MISMATCH: "连接信息与当前会话不一致，请重新连接。",
+    GBT_TEACH_PANEL_IP_REQUIRED: "未配置示教器 IP。",
+    GBT_INVALID_EXPORT_DATE: "日期格式应为 YYYY-MM-DD。",
+    GBT_INTERNAL_ERROR: "操作失败，详情请查看日志。",
+    GBT_CONNECT_FAILED: "连接失败，请检查 IP 与网络。",
+    GBT_PROGRAM_NOT_FOUND: "找不到对应程序，请检查程序名是否正确。",
+    GBT_FILE_NOT_READABLE: "所选文件不存在或无法读取。",
+    GBT_P_READ_NEED_PROGRAM: "P 点读取必须填写程序名。",
+    GBT_P_WRITE_NEED_PROGRAM: "写入 P 点前必须填写程序名。",
+    GBT_P_SERVICE_UNREACHABLE: "无法连接 P 寄存器服务，请检查控制器端口 5606 与网络。",
+    GBT_UNSUPPORTED_REGISTER_TYPE: "不支持的寄存器类型。",
+    GBT_OPENPYXL_MISSING: "未安装 openpyxl，无法处理 Excel。",
+    GBT_SDK_NOT_FOUND: "未找到 Agilebot Python SDK。",
+    GBT_SIDECAR_MISSING: "找不到机器人通信组件，请重新安装应用。",
+    GBT_EXTENSION_INSTALL_FAILED: "插件或依赖安装失败，详情请查看日志。"
   },
   conflict: {
-    title: "寄存器冲突",
-    stop: "停止",
-    skipExisting: "跳过已存在",
-    overwriteExisting: "覆盖已存在",
-    bodyImport:
-      "检测到 {total} 个寄存器在机器人上已存在（与当前表格 ID 重叠）。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次导入，不写入任何数据。",
-    bodyCreate:
-      "检测到以下寄存器已存在：{ids}。请选择：覆盖将写入并替换已存在项；跳过将保留机器人上原值；停止将取消本次批量新建，不写入任何数据。"
+    title: "寄存器冲突", stop: "停止", skipExisting: "跳过已存在", overwriteExisting: "覆盖已存在",
+    bodyImport: "检测到 {total} 个寄存器在机器人上已存在。请选择：覆盖会替换已有值；跳过会保留机器人上的原值；停止会取消本次导入。",
+    bodyCreate: "检测到以下寄存器已存在：{ids}。请选择：覆盖会替换已有值；跳过会保留机器人上的原值；停止会取消本次批量新建。"
   },
   messages: {
-    enterIp: "请先输入控制柜 IP。",
-    invalidIp: "请输入合法的 IPv4 地址（如 192.168.1.100）。",
-    invalidTeachPanelIp: "示教器 IP 格式不合法，请输入合法 IPv4 或留空。",
-    connectSuccess: "机器人连接成功。",
-    connecting: "连接中…",
-    connectDebug: "已进入调试模式（未连接真实机器人）。",
-    connectFailed: "连接失败。",
-    unsupportedRobotModel:
-      "无法识别机器人机型（须为 GBT-P / GBT-C / GBT-S 系列），已断开连接。请核对机型或联系技术支持。",
-    needConnect: "请先连接机器人。",
-    pReadNeedProgram: "P 点读取必须填写程序名。",
-    readDone: "读取完成，共 {total} 条。",
-    excelPreview: "文档已加载并预览，共 {total} 行。",
-    noExportData: "没有可导出的预览数据。",
-    needPreviewData: "请先准备预览数据。",
-    pWriteNeedProgram: "写入 P 点前必须填写程序名。",
-    noValidRegIds: "预览数据中没有有效的寄存器 ID。",
-    importCancelled: "已取消本次导入。",
-    countPositive: "数量必须大于 0。",
-    pCreateNeedProgram: "创建 P 点前必须填写程序名。",
-    createCancelled: "已取消本次批量新建。"
+    enterIp: "请先输入控制柜 IP。", invalidIp: "请输入合法的 IPv4 地址（如 192.168.1.100）。", invalidTeachPanelIp: "示教器 IP 格式不合法，请输入合法 IPv4 或留空。",
+    connectSuccess: "机器人连接成功。", connecting: "连接中...", connectDebug: "已进入调试模式（未连接真实机器人）。", connectFailed: "连接失败。", disconnected: "已断开连接。",
+    unsupportedRobotModel: "无法识别机器人机型（须为 GBT-P / GBT-C / GBT-S 系列），已断开连接。请核对机型或联系技术支持。",
+    needConnect: "请先连接机器人。", pReadNeedProgram: "P 点读取必须填写程序名。", readDone: "读取完成，共 {total} 条。", excelPreview: "文件已加载并预览，共 {total} 行。",
+    noExportData: "没有可导出的预览数据。", needPreviewData: "请先准备预览数据。", pWriteNeedProgram: "写入 P 点前必须填写程序名。", noValidRegIds: "预览数据中没有有效的寄存器 ID。",
+    importCancelled: "已取消本次导入。", applyDone: "完成：成功 {success}，跳过 {skipped}，失败 {failed}。", applyFailed: "写入未全部成功：成功 {success}，跳过 {skipped}，失败 {failed}。", countPositive: "数量必须大于 0。", pCreateNeedProgram: "创建 P 点前必须填写程序名。", createCancelled: "已取消本次批量新建。"
   },
-  excel: {
-    empty: "Excel 内容为空。",
-    headerMismatch: "表头不匹配。期望：{expected}；实际：{actual}",
-    readFailed: "读取文件失败。",
-    tooLarge: "文件过大（超过 {limitMb} MB），请分拆后再导入。",
-    tooManyRows: "数据行过多（{actual} 行，上限 {limit} 行）。"
-  },
-  connect: {
-    title: "连接机器人",
-    ipPlaceholder: "IP，例如 10.27.1.254",
-    controllerIpPlaceholder: "控制柜 IP，例如 10.27.1.254",
-    teachPanelIpPlaceholder: "示教器 IP（可选，无示教器可留空）",
-    recentPlaceholder: "最近使用 IP",
-    connect: "连接",
-    disconnect: "断开连接"
-  },
-  sidebar: {
-    title: "功能菜单",
-    batchCreate: "批量新建寄存器",
-    dataExport: "寄存器数据导出",
-    dataImport: "寄存器数据导入",
-    logDataExport: "日志/程序与数据导出",
-    pluginInstall: "插件安装"
-  },
-  pluginInstall: {
-    title: "插件安装",
-    seriesNeedsTeachPanel:
-      "GBT-P / GBT-C 与 GBT-S 机型下，未填写示教器 IP 时无法检测 SDK、无法安装插件与依赖。请在首页连接处填写示教器 IP 后重新连接。",
-    errorNeedsTeachPanelIp:
-      "GBT-P / GBT-C / GBT-S 须通过示教器安装插件与依赖。请在首页连接处填写示教器 IP 后重新连接。",
-    errorDebugBypass: "调试模式不支持向机器人安装插件或依赖。",
-    errorNoExtFile: "未选择插件文件。",
-    errorNoWhlFile: "未选择依赖文件。",
-    extPathLabel: "插件包路径（.gbtapp）",
-    extPathPlaceholder: "点击下方「选择插件文件」",
-    whlPathLabel: "依赖包路径（.whl）",
-    whlPathPlaceholder: "点击下方「选择依赖文件」",
-    pickExt: "选择插件文件",
-    pickWhl: "选择依赖文件",
-    installExt: "安装插件",
-    installWhl: "安装依赖",
-    noExtFile: "请先选择插件文件。",
-    noWhlFile: "请先选择依赖文件（.whl）。",
-    extSuccess: "插件安装成功：{name}（版本 {version}）",
-    whlSuccess: "依赖（wheel）安装完成。",
-  },
-  logExport: {
-    cardTitle: "日志与程序数据导出",
-    pickDate: "选择日志日期（公历）",
-    hintProgramData: "导出程序数据不依赖上方日期。",
-    exportControllerLogs: "导出控制柜日志",
-    exportTeachPanelLogs: "导出示教器日志",
-    exportProgramData: "导出程序数据",
-    needConnectHint: "请先连接机器人后再导出。",
-    noTeachIpHint: "当前未填写示教器 IP，无法导出示教器日志。",
-    cancelledSave: "已取消保存"
-  },
-  create: {
-    cardTitle: "快速批量新建寄存器",
-    start: "开始批量新建",
-    running: "新建中"
-  },
-  export: {
-    title: "寄存器数据导出",
-    readPreview: "从机器人读取并预览",
-    reading: "读取中",
-    toExcel: "导出到 Excel"
-  },
-  import: {
-    title: "寄存器数据导入",
-    pickExcel: "导入 Excel 并预览",
-    downloadTemplate: "下载当前类型模板",
-    applyRobot: "导入到机器人",
-    applying: "导入中"
-  },
-  form: {
-    regType: "寄存器类型",
-    count: "数量",
-    startId: "起始 ID",
-    endId: "结束 ID",
-    programName: "程序名",
-    readMode: "读取模式",
-    range: "指定范围",
-    all: "全部"
-  },
-  alert: {
-    failTop20: "失败明细（前20条）"
-  },
-  lang: {
-    switcherTitle: "切换界面语言"
-  }
+  excel: { empty: "Excel 内容为空。", headerMismatch: "表头不匹配。期望：{expected}；实际：{actual}", readFailed: "读取文件失败。", tooLarge: "文件过大（超过 {limitMb} MB），请拆分后再导入。", tooManyRows: "数据行过多（{actual} 行，上限 {limit} 行）。" },
+  connect: { title: "连接机器人", ipPlaceholder: "IP，例如 10.27.1.254", controllerIpPlaceholder: "控制柜 IP，例如 10.27.1.254", teachPanelIpPlaceholder: "示教器 IP（可选，无示教器可留空）", recentPlaceholder: "最近使用 IP", connect: "连接", disconnect: "断开连接" },
+  sidebar: { title: "功能菜单", batchCreate: "批量新建寄存器", dataExport: "寄存器数据导出", dataImport: "寄存器数据导入", logDataExport: "日志/程序与数据导出", pluginInstall: "插件安装" },
+  pluginInstall: { title: "插件安装", seriesNeedsTeachPanel: "GBT-P / GBT-C / GBT-S 机型下，未填写示教器 IP 时无法检测 SDK、安装插件与依赖。请填写示教器 IP 后重新连接。", errorNeedsTeachPanelIp: "GBT-P / GBT-C / GBT-S 须通过示教器安装插件与依赖。请填写示教器 IP 后重新连接。", errorDebugBypass: "调试模式不支持安装插件或依赖。", errorNoExtFile: "未选择插件文件。", errorNoWhlFile: "未选择依赖文件。", extPathLabel: "插件包路径（.gbtapp）", extPathPlaceholder: "点击下方选择插件文件", whlPathLabel: "依赖包路径（.whl）", whlPathPlaceholder: "点击下方选择依赖文件", pickExt: "选择插件文件", pickWhl: "选择依赖文件", fileFilterExt: "GBT 插件（.gbtapp）", fileFilterWhl: "Python 依赖包（.whl）", installExt: "安装插件", installWhl: "安装依赖", noExtFile: "请先选择插件文件。", noWhlFile: "请先选择依赖文件（.whl）。", extSuccess: "插件安装成功：{name}（版本 {version}）", whlSuccess: "依赖（wheel）安装完成。" },
+  logExport: { cardTitle: "日志与程序数据导出", pickDate: "选择日志日期（公历）", hintProgramData: "导出程序数据不依赖上方日期。", exportControllerLogs: "导出控制柜日志", exportTeachPanelLogs: "导出示教器日志", exportProgramData: "导出程序数据", needConnectHint: "请先连接机器人后再导出。", noTeachIpHint: "当前未填写示教器 IP，无法导出示教器日志。", cancelledSave: "已取消保存" },
+  create: { cardTitle: "快速批量新建寄存器", start: "开始批量新建", running: "新建中..." },
+  export: { title: "寄存器数据导出", readPreview: "从机器人读取并预览", reading: "读取中...", toExcel: "导出到 Excel" },
+  import: { title: "寄存器数据导入", pickExcel: "导入 Excel 并预览", downloadTemplate: "下载当前类型模板", applyRobot: "导入到机器人", applying: "导入中..." },
+  form: { regType: "寄存器类型", count: "数量", startId: "起始 ID", endId: "结束 ID", programName: "程序名", readMode: "读取模式", range: "指定范围", all: "全部" },
+  alert: { failTop20: "失败明细（前20条）" }, lang: { switcherTitle: "切换界面语言" },
+  response: { disconnected: "已断开连接。", save_cancelled: "已取消保存。", export_saved: "Excel 文件已导出。", template_saved: "模板已导出。", logs_exported: "已导出 {count} 个日志文件。", no_logs: "未查找到对应日期的日志。", program_data_exported: "程序数据已导出，共 {count} 个文件。", wheel_installed: "依赖（wheel）安装完成。", operation_failed: "操作失败。", write_skipped_debug: "调试模式：已跳过写入。" },
+  progress: { readStarting: "读取中...", writeStarting: "写入中...", read: "正在读取 {current}/{total}，已匹配 {matched} 条。", readAll: "正在读取 ID {current}，已匹配 {matched} 条。", write: "正在写入 {current}/{total}，已完成 {matched} 条。", exportStarting: "正在准备导出，扫描待导出文件...", exportScan: "扫描完成，共 {total} 个待导出文件", exportDownload: "导出中 {current}/{total}，已导出 {matched} 个", exportZip: "正在打包 ZIP..." }
 };

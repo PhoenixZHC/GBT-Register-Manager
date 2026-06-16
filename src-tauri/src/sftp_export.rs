@@ -13,6 +13,32 @@ use zip::write::FileOptions;
 use zip::CompressionMethod;
 use zip::ZipWriter;
 
+use crate::gbt_log;
+
+const GBT_INTERNAL_ERROR: &str = "GBT_INTERNAL_ERROR";
+const GBT_INVALID_EXPORT_DATE: &str = "GBT_INVALID_EXPORT_DATE";
+
+fn sftp_ipc_err(ctx: &str) -> String {
+    gbt_log(ctx);
+    GBT_INTERNAL_ERROR.to_string()
+}
+
+/// SFTP 导出进度：`phase` 为 `scan` | `download` | `zip`；
+/// `current`/`total` 为正在处理的文件序号与总数，`done` 为已完成（已下载）数量。
+pub type ExportProgressCallback<'a> = Option<&'a mut dyn FnMut(&'static str, usize, usize, usize)>;
+
+fn report_progress(
+    cb: &mut ExportProgressCallback<'_>,
+    phase: &'static str,
+    current: usize,
+    total: usize,
+    done: usize,
+) {
+    if let Some(f) = cb {
+        f(phase, current, total, done);
+    }
+}
+
 /// SSH/SFTP 端口（与 WinSCP 默认一致）。
 const SFTP_PORT: u16 = 22;
 
@@ -65,9 +91,7 @@ pub fn app_log_basename_matches_calendar_date(name: &str, yyyymmdd: &str) -> boo
 
 fn ensure_password_set(pw: &str, label: &str) -> Result<(), String> {
     if pw.is_empty() {
-        return Err(format!(
-            "SFTP 密码未配置：请在 src-tauri/src/sftp_export.rs 中设置 {label}"
-        ));
+        return Err(sftp_ipc_err(&format!("SFTP password not configured: {label}")));
     }
     Ok(())
 }
@@ -75,20 +99,21 @@ fn ensure_password_set(pw: &str, label: &str) -> Result<(), String> {
 fn tcp_connect(host: &str) -> Result<TcpStream, String> {
     let addr: SocketAddr = format!("{host}:{SFTP_PORT}")
         .parse()
-        .map_err(|_| format!("无法解析地址: {host}:{SFTP_PORT}"))?;
+        .map_err(|_| sftp_ipc_err(&format!("invalid address: {host}:{SFTP_PORT}")))?;
     TcpStream::connect_timeout(&addr, Duration::from_secs(20))
-        .map_err(|e| format!("连接 {host}:{SFTP_PORT} 失败: {e}"))
+        .map_err(|e| sftp_ipc_err(&format!("tcp connect {host}:{SFTP_PORT}: {e}")))
 }
 
 fn ssh_session(host: &str, password: &str) -> Result<Session, String> {
     let tcp = tcp_connect(host)?;
-    let mut sess = Session::new().map_err(|e| format!("创建 SSH 会话失败: {e}"))?;
+    let mut sess = Session::new().map_err(|e| sftp_ipc_err(&format!("ssh session new: {e}")))?;
     sess.set_tcp_stream(tcp);
-    sess.handshake().map_err(|e| format!("SSH 握手失败: {e}"))?;
+    sess.handshake()
+        .map_err(|e| sftp_ipc_err(&format!("ssh handshake {host}: {e}")))?;
     sess.userauth_password(SFTP_USER, password)
-        .map_err(|e| format!("SSH 认证失败: {e}"))?;
+        .map_err(|e| sftp_ipc_err(&format!("ssh auth {host}: {e}")))?;
     if !sess.authenticated() {
-        return Err("SSH 认证未通过".into());
+        return Err(sftp_ipc_err(&format!("ssh auth failed: {host}")));
     }
     Ok(sess)
 }
@@ -137,35 +162,35 @@ fn sdk_version_for_display(full: &str) -> String {
 /// `password` 须与控制柜或示教器上 `root` 账号一致（见本文件顶部常量）。
 pub fn fetch_agilebot_sdk_version(host: &str, password: &str) -> Result<String, String> {
     if password.is_empty() {
-        return Err("SFTP 密码未配置：请在 src-tauri/src/sftp_export.rs 中设置对应设备的密码常量".into());
+        return Err(sftp_ipc_err("SFTP password not configured for SDK version fetch"));
     }
     let host = host.trim();
     if host.is_empty() {
-        return Err("目标主机 IP 为空".into());
+        return Err(sftp_ipc_err("SDK version fetch host is empty"));
     }
     let sess = ssh_session(host, password)?;
     let cmd = "bash -lc 'cd /opt/python3.12/bin && ./pip3.12 list'";
     let mut channel = sess
         .channel_session()
-        .map_err(|e| format!("打开 SSH 通道失败: {e}"))?;
+        .map_err(|e| sftp_ipc_err(&format!("ssh channel open {host}: {e}")))?;
     channel
         .exec(cmd)
-        .map_err(|e| format!("执行远程命令失败: {e}"))?;
+        .map_err(|e| sftp_ipc_err(&format!("ssh exec pip list {host}: {e}")))?;
 
     let mut stdout = String::new();
     channel
         .read_to_string(&mut stdout)
-        .map_err(|e| format!("读取命令输出失败: {e}"))?;
+        .map_err(|e| sftp_ipc_err(&format!("read pip list stdout {host}: {e}")))?;
 
     let mut stderr = String::new();
     channel
         .stderr()
         .read_to_string(&mut stderr)
-        .map_err(|e| format!("读取 stderr 失败: {e}"))?;
+        .map_err(|e| sftp_ipc_err(&format!("read pip list stderr {host}: {e}")))?;
 
     channel
         .wait_close()
-        .map_err(|e| format!("等待命令结束失败: {e}"))?;
+        .map_err(|e| sftp_ipc_err(&format!("wait pip list close {host}: {e}")))?;
 
     let code = channel.exit_status().unwrap_or(-1);
     if code != 0 {
@@ -175,18 +200,18 @@ pub fn fetch_agilebot_sdk_version(host: &str, password: &str) -> Result<String, 
         } else {
             tail.chars().take(200).collect::<String>()
         };
-        return Err(format!("pip list 退出码 {code}: {hint}"));
+        return Err(sftp_ipc_err(&format!("pip list exit {code} on {host}: {hint}")));
     }
 
     let full = parse_pip_list_sdk_version(&stdout).ok_or_else(|| {
-        format!(
-            "pip list 中未找到 {ROBOT_SDK_PIP_PACKAGE}，输出摘要: {}",
+        sftp_ipc_err(&format!(
+            "pip list missing {ROBOT_SDK_PIP_PACKAGE} on {host}: {}",
             stdout.trim().chars().take(200).collect::<String>()
-        )
+        ))
     })?;
     let display = sdk_version_for_display(&full);
     if display.is_empty() {
-        return Err(format!("SDK 版本解析为空（原始: {full}）"));
+        return Err(sftp_ipc_err(&format!("empty SDK version parsed from: {full}")));
     }
     Ok(display)
 }
@@ -223,15 +248,15 @@ bar 2.0
 fn download_remote_file(sftp: &Sftp, remote_path: &Path, local_path: &Path) -> Result<(), String> {
     if let Some(parent) = local_path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建本地目录失败 {}: {e}", parent.display()))?;
+            .map_err(|e| sftp_ipc_err(&format!("mkdir {}: {e}", parent.display())))?;
     }
     let mut remote = sftp
         .open(remote_path)
-        .map_err(|e| format!("打开远程文件 {} 失败: {e}", remote_path.display()))?;
+        .map_err(|e| sftp_ipc_err(&format!("open remote {}: {e}", remote_path.display())))?;
     let mut local = File::create(local_path)
-        .map_err(|e| format!("创建本地文件 {} 失败: {e}", local_path.display()))?;
+        .map_err(|e| sftp_ipc_err(&format!("create local {}: {e}", local_path.display())))?;
     std::io::copy(&mut remote, &mut local)
-        .map_err(|e| format!("下载 {} 失败: {e}", remote_path.display()))?;
+        .map_err(|e| sftp_ipc_err(&format!("download {}: {e}", remote_path.display())))?;
     Ok(())
 }
 
@@ -239,7 +264,7 @@ fn download_remote_file(sftp: &Sftp, remote_path: &Path, local_path: &Path) -> R
 /// 同时写入目录条目，保证空目录也能保留在 ZIP 中（修复 robot_data 导出时
 /// 空子目录如 `event_history` / `nvram` / `palletizing` / `simulator` 丢失的问题）。
 fn zip_staging_dir(staging: &Path, zip_path: &Path) -> Result<(), String> {
-    let file = File::create(zip_path).map_err(|e| format!("创建 ZIP 失败: {e}"))?;
+    let file = File::create(zip_path).map_err(|e| sftp_ipc_err(&format!("create zip: {e}")))?;
     let mut zip = ZipWriter::new(file);
     let opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
 
@@ -247,7 +272,7 @@ fn zip_staging_dir(staging: &Path, zip_path: &Path) -> Result<(), String> {
         let rel = entry
             .path()
             .strip_prefix(staging)
-            .map_err(|e| format!("路径前缀: {e}"))?;
+            .map_err(|e| sftp_ipc_err(&format!("zip strip_prefix: {e}")))?;
         let name_in_zip = rel.to_string_lossy().replace('\\', "/");
         if name_in_zip.is_empty() {
             continue;
@@ -255,45 +280,21 @@ fn zip_staging_dir(staging: &Path, zip_path: &Path) -> Result<(), String> {
         let ft = entry.file_type();
         if ft.is_dir() {
             zip.add_directory(name_in_zip.clone(), opts)
-                .map_err(|e| format!("ZIP 添加目录 {name_in_zip} 失败: {e}"))?;
+                .map_err(|e| sftp_ipc_err(&format!("zip add dir {name_in_zip}: {e}")))?;
             continue;
         }
         if !ft.is_file() {
             continue;
         }
         zip.start_file(name_in_zip.clone(), opts)
-            .map_err(|e| format!("ZIP 添加 {name_in_zip} 失败: {e}"))?;
+            .map_err(|e| sftp_ipc_err(&format!("zip start {name_in_zip}: {e}")))?;
         let mut f =
-            File::open(entry.path()).map_err(|e| format!("读取 {name_in_zip} 失败: {e}"))?;
-        std::io::copy(&mut f, &mut zip).map_err(|e| format!("写入 ZIP {name_in_zip} 失败: {e}"))?;
+            File::open(entry.path()).map_err(|e| sftp_ipc_err(&format!("zip read {name_in_zip}: {e}")))?;
+        std::io::copy(&mut f, &mut zip)
+            .map_err(|e| sftp_ipc_err(&format!("zip write {name_in_zip}: {e}")))?;
     }
-    zip.finish().map_err(|e| format!("完成 ZIP 失败: {e}"))?;
+    zip.finish().map_err(|e| sftp_ipc_err(&format!("zip finish: {e}")))?;
     Ok(())
-}
-
-fn collect_log_files_from_remote_dir(
-    sftp: &Sftp,
-    remote_dir: &Path,
-    yyyymmdd: &str,
-    matches_date: fn(&str, &str) -> bool,
-) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    let entries = sftp
-        .readdir(remote_dir)
-        .map_err(|e| format!("列举目录 {} 失败: {e}", remote_dir.display()))?;
-    for (path, stat) in entries {
-        if stat.is_dir() {
-            continue;
-        }
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "." || name == ".." {
-            continue;
-        }
-        if matches_date(name, yyyymmdd) {
-            out.push(path);
-        }
-    }
-    Ok(out)
 }
 
 fn copy_logs_to_staging(
@@ -301,21 +302,46 @@ fn copy_logs_to_staging(
     remote_dirs: &[(&Path, &str, fn(&str, &str) -> bool)],
     yyyymmdd: &str,
     staging: &Path,
+    on_progress: &mut ExportProgressCallback<'_>,
 ) -> Result<usize, String> {
-    let mut total = 0usize;
+    // 先扫描出所有匹配日期的文件，得到总数后再逐个下载，
+    // 这样前端能显示“导出中 i/N，已导出 j”而不是只有递增的当前数。
+    report_progress(on_progress, "scan", 0, 0, 0);
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     for (remote_dir, folder_name, matches_date) in remote_dirs {
-        let paths = collect_log_files_from_remote_dir(sftp, remote_dir, yyyymmdd, *matches_date)?;
-        for remote_path in paths {
-            let fname = remote_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| "远程文件名无效".to_string())?;
-            let local = staging.join(folder_name).join(fname);
-            download_remote_file(sftp, &remote_path, &local)?;
-            total += 1;
+        let entries = sftp
+            .readdir(remote_dir)
+            .map_err(|e| sftp_ipc_err(&format!("readdir {}: {e}", remote_dir.display())))?;
+        for (path, stat) in entries {
+            if stat.is_dir() {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "." || name == ".." {
+                continue;
+            }
+            if !matches_date(name, yyyymmdd) {
+                continue;
+            }
+            let local_path = staging.join(folder_name).join(name);
+            files.push((path, local_path));
         }
     }
-    Ok(total)
+
+    let total = files.len();
+    report_progress(on_progress, "scan", 0, total, 0);
+
+    let mut downloaded = 0usize;
+    for (remote_path, local_path) in &files {
+        // 下载当前文件之前先上报：current=正在下载的序号，done=此前已完成数量。
+        report_progress(on_progress, "download", downloaded + 1, total, downloaded);
+        download_remote_file(sftp, remote_path, local_path)?;
+        downloaded += 1;
+    }
+    if total > 0 {
+        report_progress(on_progress, "download", total, total, downloaded);
+    }
+    Ok(downloaded)
 }
 
 /// 导出控制柜 `/root/log` 与 `/root/app_log` 中指定日期的日志为 ZIP。
@@ -323,12 +349,13 @@ pub fn run_export_controller_logs(
     host: &str,
     yyyymmdd: &str,
     zip_path: &Path,
+    on_progress: &mut ExportProgressCallback<'_>,
 ) -> Result<usize, String> {
     ensure_password_set(SFTP_PASSWORD_CONTROLLER, "SFTP_PASSWORD_CONTROLLER")?;
     let sess = ssh_session(host, SFTP_PASSWORD_CONTROLLER)?;
-    let sftp = sess.sftp().map_err(|e| format!("打开 SFTP 失败: {e}"))?;
+    let sftp = sess.sftp().map_err(|e| sftp_ipc_err(&format!("open sftp {host}: {e}")))?;
 
-    let staging = tempfile::tempdir().map_err(|e| format!("临时目录: {e}"))?;
+    let staging = tempfile::tempdir().map_err(|e| sftp_ipc_err(&format!("tempdir: {e}")))?;
     let dirs = [
         (
             Path::new("/root/log"),
@@ -341,10 +368,11 @@ pub fn run_export_controller_logs(
             app_log_basename_matches_calendar_date as fn(&str, &str) -> bool,
         ),
     ];
-    let n = copy_logs_to_staging(&sftp, &dirs, yyyymmdd, staging.path())?;
+    let n = copy_logs_to_staging(&sftp, &dirs, yyyymmdd, staging.path(), on_progress)?;
     if n == 0 {
         return Ok(0);
     }
+    report_progress(on_progress, "zip", n, n, n);
     zip_staging_dir(staging.path(), zip_path)?;
     Ok(n)
 }
@@ -354,30 +382,85 @@ pub fn run_export_teach_panel_logs(
     host: &str,
     yyyymmdd: &str,
     zip_path: &Path,
+    on_progress: &mut ExportProgressCallback<'_>,
 ) -> Result<usize, String> {
     ensure_password_set(SFTP_PASSWORD_TEACH_PANEL, "SFTP_PASSWORD_TEACH_PANEL")?;
     let sess = ssh_session(host, SFTP_PASSWORD_TEACH_PANEL)?;
-    let sftp = sess.sftp().map_err(|e| format!("打开 SFTP 失败: {e}"))?;
+    let sftp = sess.sftp().map_err(|e| sftp_ipc_err(&format!("open sftp {host}: {e}")))?;
 
-    let staging = tempfile::tempdir().map_err(|e| format!("临时目录: {e}"))?;
+    let staging = tempfile::tempdir().map_err(|e| sftp_ipc_err(&format!("tempdir: {e}")))?;
     let dirs = [(
         Path::new("/root/app_log"),
         "app_log",
         app_log_basename_matches_calendar_date as fn(&str, &str) -> bool,
     )];
-    let n = copy_logs_to_staging(&sftp, &dirs, yyyymmdd, staging.path())?;
+    let n = copy_logs_to_staging(&sftp, &dirs, yyyymmdd, staging.path(), on_progress)?;
     if n == 0 {
         return Ok(0);
     }
+    report_progress(on_progress, "zip", n, n, n);
     zip_staging_dir(staging.path(), zip_path)?;
     Ok(n)
 }
 
-fn mirror_remote_dir(sftp: &Sftp, remote: &Path, local: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(local).map_err(|e| format!("mkdir {}: {e}", local.display()))?;
+/// 递归下载控制柜 `/root/robot_data` 并打包为 ZIP（先扫描整棵目录树得到总数，再逐个下载，
+/// 以便前端显示“导出中 i/N，已导出 j”；空目录会被保留以维持 ZIP 结构完整）。
+pub fn run_export_program_data(
+    host: &str,
+    zip_path: &Path,
+    on_progress: &mut ExportProgressCallback<'_>,
+) -> Result<usize, String> {
+    ensure_password_set(SFTP_PASSWORD_CONTROLLER, "SFTP_PASSWORD_CONTROLLER")?;
+    let sess = ssh_session(host, SFTP_PASSWORD_CONTROLLER)?;
+    let sftp = sess.sftp().map_err(|e| sftp_ipc_err(&format!("open sftp {host}: {e}")))?;
+
+    let remote_root = Path::new("/root/robot_data");
+    let staging = tempfile::tempdir().map_err(|e| sftp_ipc_err(&format!("tempdir: {e}")))?;
+    let local_root = staging.path().join("robot_data");
+
+    // 第一步：递归扫描整棵目录树，收集所有文件与目录（含空目录），得到总数。
+    report_progress(on_progress, "scan", 0, 0, 0);
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    scan_remote_tree(&sftp, remote_root, &local_root, &mut files, &mut dirs)?;
+
+    // 第二步：先创建所有目录（保留空目录），再逐个下载文件并上报进度。
+    std::fs::create_dir_all(&local_root)
+        .map_err(|e| sftp_ipc_err(&format!("mkdir {}: {e}", local_root.display())))?;
+    for dir in &dirs {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| sftp_ipc_err(&format!("mkdir {}: {e}", dir.display())))?;
+    }
+
+    let total = files.len();
+    report_progress(on_progress, "scan", 0, total, 0);
+
+    let mut downloaded = 0usize;
+    for (remote_path, local_path) in &files {
+        report_progress(on_progress, "download", downloaded + 1, total, downloaded);
+        download_remote_file(&sftp, remote_path, local_path)?;
+        downloaded += 1;
+    }
+    if total > 0 {
+        report_progress(on_progress, "download", total, total, downloaded);
+    }
+
+    report_progress(on_progress, "zip", downloaded.max(1), downloaded.max(1), downloaded);
+    zip_staging_dir(staging.path(), zip_path)?;
+    Ok(downloaded)
+}
+
+/// 递归列举远端目录树：收集文件 `(remote, local)` 与所有子目录的本地路径（含空目录）。
+fn scan_remote_tree(
+    sftp: &Sftp,
+    remote: &Path,
+    local: &Path,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+    dirs: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries = sftp
         .readdir(remote)
-        .map_err(|e| format!("列举 {} 失败: {e}", remote.display()))?;
+        .map_err(|e| sftp_ipc_err(&format!("readdir {}: {e}", remote.display())))?;
     for (path, stat) in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name == "." || name == ".." {
@@ -385,31 +468,19 @@ fn mirror_remote_dir(sftp: &Sftp, remote: &Path, local: &Path) -> Result<(), Str
         }
         let local_child = local.join(name);
         if stat.is_dir() {
-            mirror_remote_dir(sftp, &path, &local_child)?;
+            dirs.push(local_child.clone());
+            scan_remote_tree(sftp, &path, &local_child, files, dirs)?;
         } else {
-            download_remote_file(sftp, &path, &local_child)?;
+            files.push((path, local_child));
         }
     }
-    Ok(())
-}
-
-/// 递归下载控制柜 `/root/robot_data` 并打包为 ZIP。
-pub fn run_export_program_data(host: &str, zip_path: &Path) -> Result<(), String> {
-    ensure_password_set(SFTP_PASSWORD_CONTROLLER, "SFTP_PASSWORD_CONTROLLER")?;
-    let sess = ssh_session(host, SFTP_PASSWORD_CONTROLLER)?;
-    let sftp = sess.sftp().map_err(|e| format!("打开 SFTP 失败: {e}"))?;
-
-    let staging = tempfile::tempdir().map_err(|e| format!("临时目录: {e}"))?;
-    let local_root = staging.path().join("robot_data");
-    mirror_remote_dir(&sftp, Path::new("/root/robot_data"), &local_root)?;
-    zip_staging_dir(staging.path(), zip_path)?;
     Ok(())
 }
 
 /// 校验 `YYYY-MM-DD` 并返回 `YYYYMMDD`。
 pub fn parse_export_date(date_yyyy_mm_dd: &str) -> Result<String, String> {
     let d = NaiveDate::parse_from_str(date_yyyy_mm_dd.trim(), "%Y-%m-%d")
-        .map_err(|_| "日期格式应为 YYYY-MM-DD".to_string())?;
+        .map_err(|_| GBT_INVALID_EXPORT_DATE.to_string())?;
     Ok(d.format("%Y%m%d").to_string())
 }
 

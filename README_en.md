@@ -10,7 +10,7 @@
 
 This desktop app is the **Agilebot** robot **toolbox**: after a successful controller connection, you can **batch-edit R, PR, and P registers** (Excel import/export, batch create) and, over **SFTP**, **export controller / teach-pendant logs by calendar date** and **export program data (`robot_data`)** from the cabinet—without manual WinSCP steps. While connecting, a **Connecting…** message stays visible until the link is up and robot header info is loaded; the header can show **controller / teach pendant IPs**, **robot model**, and the **Agilebot.Robot.SDK.A** pip version on the cabinet (via SSH, same controller credentials as SFTP in `src-tauri/src/sftp_export.rs`). A **Plugin installation** page uploads **.gbtapp** packages and **.whl** wheels to the cabinet **Extension_Service (HTTP 5615)**.
 
-Current app version: `v1.2.0`
+Current app version: `v1.2.8`
 
 ## Compatible SDK
 
@@ -33,9 +33,9 @@ Agilebot Python SDK | v2.0.1.0
 4. **Register data import**: **Import Excel**, preview, then **write to the robot**; if target IDs already exist, choose **overwrite**, **skip existing**, or **cancel**. **Export template** (headers only) is supported for offline editing.
 
 5. **Logs / programs & data export** (requires a **real** connection—not the debug bypass IP):
-   - **Export controller logs**: For the selected calendar date, collect pure timestamp files `YYYYMMDDHHmmss.log` under `/root/log`, and service `.log` files whose names contain the selected date under `/root/app_log`, then ZIP them together.
-   - **Export teach pendant logs**: For the selected calendar date, collect service `.log` files whose names contain the selected date under the pendant’s `/root/app_log` (requires **teach pendant IP** saved at connect time).
-   - **Export program data**: Recursively download `/root/robot_data` from the cabinet to a ZIP (date-independent).  
+   - **Export controller logs**: For the selected calendar date, collect pure timestamp files `YYYYMMDDHHmmss.log` under `/root/log`, and service `.log` files whose names contain the selected date under `/root/app_log`, then ZIP them together. Shows **total file count** and **live progress** (scan → download → ZIP).
+   - **Export teach pendant logs**: For the selected calendar date, collect service `.log` files whose names contain the selected date under the pendant’s `/root/app_log` (requires **teach pendant IP** saved at connect time), with the same progress UI.
+   - **Export program data**: Recursively download `/root/robot_data` from the cabinet to a ZIP (date-independent); remote files are counted first, then downloaded and zipped with step-by-step progress.  
    SFTP credentials are set in `src-tauri/src/sftp_export.rs` (controller and pendant passwords).
 
 6. **Languages**: Use the header switcher for **中文**, **English**, **日本語**, **한국어**, **Русский**.
@@ -84,6 +84,42 @@ Agilebot Python SDK | v2.0.1.0
 
 ## Changelog
 
+### V1.2.8 (2026-06-16)
+
+- Version bumped to **1.2.8**.
+- **Build optimization:** Tauri dependencies slimmed to the `wry` core feature; DevTools moved to the Cargo `devtools` feature. `npm run tauri:dev` and `npm run tauri:build` explicitly pass `--features devtools`, keeping F12 / Ctrl+Shift+I debugging while reducing the default dependency surface.
+- **Installer metadata:** MSI/NSIS shortDescription, longDescription, and copyright unified in English as **Agilebot robot toolbox**, matching the window title and product positioning.
+
+### V1.2.7 (2026-06-16)
+
+- Version bumped to **1.2.7**.
+- **Export progress UX:** Controller logs, teach-pendant logs, and program data (`robot_data`) export now show staged progress—**Preparing export, scanning files…** → **Scan complete: N file(s) to export** → **Exporting i/N; exported j** → **Creating ZIP**—then a completion toast with the exported count. The progress toast updates in place and transitions smoothly to success/failure.
+- **Scan-then-download:** SFTP export scans all matching remote files first for an accurate total, then downloads file by file with live progress, so the denominator stays consistent with what is actually exported.
+- **i18n:** Export progress strings updated across Chinese, English, Japanese, Korean, and Russian.
+
+### V1.2.6 (2026-06-16)
+
+- Version bumped to **1.2.6**.
+- **Fix: backend Chinese errors shown raw in the UI** — Rust, Python sidecar, and SFTP now return `GBT_*` codes; the UI maps them to the selected language instead of showing backend Chinese or tracebacks.
+- **Fix: progress events not scoped to session** — `register-progress` events carry and validate `sessionId` and `opId`; stale progress after disconnect/reconnect or op switch no longer updates the current UI.
+- **Fix: no mutex on concurrent connect / register I/O** — Connect, disconnect, register read/write, and SFTP export are serialized (`robot_op` lock); concurrent ops show “another operation in progress”.
+- **Fix: connect button double-click** — `connectBusy` ignores repeat clicks while a connect is in flight.
+- **Fix: no progress during conflict-check `readRegisters`** — Import and batch-create conflict scans now show read progress like the main read/write flow.
+- **Fix: `applyResultMessage` used success template on failure** — When `!res.ok`, the UI shows the error code or `applyFailed` summary instead of a success-style “N rows done” message.
+- **Fix: non-atomic export pre-count vs download** — Log and `robot_data` export enumerate-and-download in one pass (total grows as files download), replacing a separate full count phase that could disagree with what was actually downloaded.
+
+### V1.2.5 (2026-06-15)
+
+- Version bumped to **1.2.5**.
+- **i18n fix:** Restored full Japanese, Korean, and Russian UI and dialog strings (including 1.2.4 `response` / `progress` keys); switching language no longer falls back to English for most of the app.
+- **Read/write progress fix:** Register read/write progress now updates incrementally (`current/total`) instead of staying on “Reading…” / “Writing…” until the operation completes.
+- **Log & program-data export progress:** Controller logs, teach-pendant logs, and `robot_data` export now count matching remote files first, then show live download and ZIP progress.
+
+### V1.2.4 (2026-06-15)
+
+- Version bumped to **1.2.4**.
+- **Localized messages:** Expected operation results such as register write, batch create, export, disconnect, and wheel install now render in the selected UI language instead of showing backend Chinese text directly.
+- **Read/write progress:** Register read and write operations now keep a live progress message visible until the operation finishes or fails.
 ### V1.2.2 (2026-05-13)
 
 - Version bumped to **1.2.2**.

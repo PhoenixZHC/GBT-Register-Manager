@@ -2,7 +2,7 @@
 
 本文说明如何从源码在本机构建桌面应用（Tauri 2 + Vue 3 + Python Sidecar）。功能与使用说明见 [README.md](README.md)。
 
-当前版本：**v1.2.0**。构建产物为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。
+当前版本：**v1.2.8**。构建产物为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。
 
 ## 1. 环境与工具
 
@@ -74,7 +74,7 @@ npm run tauri:build
 2. 运行 `scripts/prepare_tauri_tools.ps1`：确认 `%LOCALAPPDATA%\tauri\WixTools314\candle.exe` 与 NSIS 已就位（不存在则按提示先执行 `npm run tauri:download-wix-nsis`）。
 3. 执行 `beforeBuildCommand`：`npm run build`（`prebuild` 再跑一次清理 → `vue-tsc --noEmit` → `vite build` → 产物写入 `dist/`）。
 4. 执行 `cargo` 编译并调用 Tauri 打包 **MSI** 与 **NSIS**。
-5. 运行 `scripts/rename_bundles.ps1`：把 `_x64_xx-XX` 语言区域后缀从 MSI/NSIS 文件名里去掉，得到干净文件名（如 `AgilebotRobotToolbox_1.2.0.msi`、`AgilebotRobotToolbox_1.2.0-setup.exe`）。
+5. 运行 `scripts/rename_bundles.ps1`：把 `_x64_xx-XX` 语言区域后缀从 MSI/NSIS 文件名里去掉，得到干净文件名（如 `AgilebotRobotToolbox_1.2.8.msi`、`AgilebotRobotToolbox_1.2.8-setup.exe`）。
 
 **产物位置**（默认 release）：
 

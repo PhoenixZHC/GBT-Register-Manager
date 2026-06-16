@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "Agilebot robot toolbox",
+    title: "ジエボテロボットツールボックス",
     model: "機種",
     software: "ソフト",
     controllerIp: "制御装置：",
@@ -8,7 +8,28 @@ export default {
     robotSdk: "SDK："
   },
   errors: {
-    appRuntime: "アプリケーションでエラーが発生しました。コンソールログを確認してください。"
+    appRuntime: "アプリケーションでエラーが発生しました。コンソールログを確認してください。",
+    GBT_CONNECTION_LOCK_ERROR: "アプリの状態が異常です。再起動してください。",
+    GBT_ROBOT_OP_BUSY: "他の操作を実行中です。しばらくお待ちください。",
+    GBT_NOT_CONNECTED: "先にロボットに接続してください。",
+    GBT_EMPTY_CONTROLLER_IP: "制御装置の IP を入力してください。",
+    GBT_META_READ_FAILED: "機種情報を読み取れません。接続と SDK を確認してください。",
+    GBT_DEBUG_EXPORT_BLOCKED: "デバッグモードではログとプログラムデータのエクスポートはできません。",
+    GBT_SESSION_MISMATCH: "接続情報が現在のセッションと一致しません。再接続してください。",
+    GBT_TEACH_PANEL_IP_REQUIRED: "ティーチペンダントの IP が未設定です。",
+    GBT_INVALID_EXPORT_DATE: "日付は YYYY-MM-DD 形式で入力してください。",
+    GBT_INTERNAL_ERROR: "操作に失敗しました。ログを確認してください。",
+    GBT_CONNECT_FAILED: "接続に失敗しました。IP とネットワークを確認してください。",
+    GBT_PROGRAM_NOT_FOUND: "プログラムが見つかりません。プログラム名を確認してください。",
+    GBT_FILE_NOT_READABLE: "選択したファイルが存在しないか、読み取れません。",
+    GBT_P_READ_NEED_PROGRAM: "P 点の読み取りにはプログラム名が必要です。",
+    GBT_P_WRITE_NEED_PROGRAM: "P 点の書き込み前にプログラム名が必要です。",
+    GBT_P_SERVICE_UNREACHABLE: "P レジスタサービスに接続できません。制御装置のポート 5606 とネットワークを確認してください。",
+    GBT_UNSUPPORTED_REGISTER_TYPE: "サポートされていないレジスタタイプです。",
+    GBT_OPENPYXL_MISSING: "openpyxl がインストールされていないため Excel を処理できません。",
+    GBT_SDK_NOT_FOUND: "Agilebot Python SDK が見つかりません。",
+    GBT_SIDECAR_MISSING: "ロボット通信コンポーネントが見つかりません。アプリを再インストールしてください。",
+    GBT_EXTENSION_INSTALL_FAILED: "プラグインまたは依存関係のインストールに失敗しました。ログを確認してください。"
   },
   conflict: {
     title: "レジスタの競合",
@@ -28,6 +49,7 @@ export default {
     connecting: "接続中…",
     connectDebug: "デバッグモードです（実機は接続されていません）。",
     connectFailed: "接続に失敗しました。",
+    disconnected: "切断しました。",
     unsupportedRobotModel:
       "ロボット機種を認識できません（GBT-P / GBT-C / GBT-S のみ）。接続を切断しました。機種を確認するかサポートに連絡してください。",
     needConnect: "先にロボットに接続してください。",
@@ -39,6 +61,8 @@ export default {
     pWriteNeedProgram: "P レジスタの書き込み前にプログラム名が必要です。",
     noValidRegIds: "プレビューデータに有効なレジスタ ID がありません。",
     importCancelled: "インポートをキャンセルしました。",
+    applyDone: "完了：成功 {success}、スキップ {skipped}、失敗 {failed}。",
+    applyFailed: "書き込みは完了していません：成功 {success}、スキップ {skipped}、失敗 {failed}。",
     countPositive: "件数は 0 より大きい必要があります。",
     pCreateNeedProgram: "P レジスタの作成前にプログラム名が必要です。",
     createCancelled: "一括作成をキャンセルしました。"
@@ -82,6 +106,8 @@ export default {
     whlPathPlaceholder: "下の「依存ファイルを選択」を使用",
     pickExt: "プラグインファイルを選択",
     pickWhl: "依存ファイルを選択",
+    fileFilterExt: "GBT プラグイン（.gbtapp）",
+    fileFilterWhl: "Python 依存パッケージ（.whl）",
     installExt: "プラグインをインストール",
     installWhl: "依存をインストール",
     noExtFile: "先にプラグインファイルを選択してください。",
@@ -133,5 +159,28 @@ export default {
   },
   lang: {
     switcherTitle: "表示言語を切り替え"
+  },
+  response: {
+    disconnected: "切断しました。",
+    save_cancelled: "保存をキャンセルしました。",
+    export_saved: "Excel ファイルをエクスポートしました。",
+    template_saved: "テンプレートをエクスポートしました。",
+    logs_exported: "ログファイルを {count} 件エクスポートしました。",
+    no_logs: "指定日のログが見つかりませんでした。",
+    program_data_exported: "プログラムデータをエクスポートしました（{count} 件）。",
+    wheel_installed: "wheel のインストールが完了しました。",
+    operation_failed: "操作に失敗しました。",
+    write_skipped_debug: "デバッグモード：書き込みをスキップしました。"
+  },
+  progress: {
+    readStarting: "読み取り中...",
+    writeStarting: "書き込み中...",
+    read: "読み取り中 {current}/{total}、一致 {matched} 件。",
+    readAll: "ID {current} を読み取り中、一致 {matched} 件。",
+    write: "書き込み中 {current}/{total}、完了 {matched} 件。",
+    exportStarting: "エクスポートを準備中、対象ファイルをスキャン中...",
+    exportScan: "スキャン完了：エクスポート対象 {total} 件",
+    exportDownload: "エクスポート中 {current}/{total}、完了 {matched} 件",
+    exportZip: "ZIP を作成中..."
   }
 };

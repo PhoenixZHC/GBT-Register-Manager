@@ -1,6 +1,6 @@
 {
   "name": "agilebot-robot-toolbox",
-  "version": "1.2.3",
+  "version": "1.2.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,11 +10,11 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "tauri dev --features devtools",
     "tauri:download-wix-nsis": "powershell -ExecutionPolicy Bypass -File scripts/download_tauri_wix_nsis_tools.ps1",
     "tauri:prepare-tools": "powershell -ExecutionPolicy Bypass -File scripts/prepare_tauri_tools.ps1",
     "pretauri:build": "npm run clean",
-    "tauri:build": "npm run tauri:prepare-tools && tauri build && npm run tauri:rename-bundles",
+    "tauri:build": "npm run tauri:prepare-tools && tauri build --features devtools && npm run tauri:rename-bundles",
     "tauri:rename-bundles": "powershell -ExecutionPolicy Bypass -File scripts/rename_bundles.ps1",
     "sidecar:build": "powershell -ExecutionPolicy Bypass -File python-sidecar/build_sidecar.ps1"
   },
@@ -35,3 +35,4 @@
     "vue-tsc": "^2.1.10"
   }
 }
+

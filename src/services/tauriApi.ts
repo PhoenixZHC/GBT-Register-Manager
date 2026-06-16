@@ -153,16 +153,22 @@ export async function installRobotWheel(localPath: string, modelHint?: string | 
 export interface ExportControllerLogsRequest {
   controllerIp: string;
   dateYyyyMmDd: string;
+  sessionId?: number;
+  progressOpId?: number;
 }
 
 export interface ExportTeachPanelLogsRequest {
   controllerIp: string;
   teachPanelIp: string;
   dateYyyyMmDd: string;
+  sessionId?: number;
+  progressOpId?: number;
 }
 
 export interface ExportProgramDataRequest {
   controllerIp: string;
+  sessionId?: number;
+  progressOpId?: number;
 }
 
 export async function exportControllerLogsZip(req: ExportControllerLogsRequest): Promise<CommonResponse> {

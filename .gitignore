@@ -66,3 +66,9 @@ python-sidecar/*.spec.bak
 # Tauri externalBin 产物（由 build_sidecar.ps1 生成，不入仓）
 src-tauri/binaries/*.exe
 src-tauri/binaries/gbt-bridge-*
+
+# Local task tracking
+doc/task_plan.md
+doc/progress.md
+doc/findings.md
+doc/task_issue.md

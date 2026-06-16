@@ -1,6 +1,6 @@
 export default {
   app: {
-    title: "Agilebot robot toolbox",
+    title: "Панель инструментов робота GBT",
     model: "Модель",
     software: "ПО",
     controllerIp: "Контроллер:",
@@ -8,7 +8,28 @@ export default {
     robotSdk: "SDK:"
   },
   errors: {
-    appRuntime: "Произошла ошибка приложения. См. журнал консоли."
+    appRuntime: "Произошла ошибка приложения. См. журнал консоли.",
+    GBT_CONNECTION_LOCK_ERROR: "Состояние приложения ненормально. Перезапустите программу.",
+    GBT_ROBOT_OP_BUSY: "Выполняется другая операция. Подождите.",
+    GBT_NOT_CONNECTED: "Сначала подключитесь к роботу.",
+    GBT_EMPTY_CONTROLLER_IP: "Укажите IP контроллера.",
+    GBT_META_READ_FAILED: "Не удалось прочитать модель робота. Проверьте подключение и SDK.",
+    GBT_DEBUG_EXPORT_BLOCKED: "В режиме отладки экспорт журналов и данных программы недоступен.",
+    GBT_SESSION_MISMATCH: "Данные подключения не совпадают с текущей сессией. Подключитесь снова.",
+    GBT_TEACH_PANEL_IP_REQUIRED: "IP пульта обучения не задан.",
+    GBT_INVALID_EXPORT_DATE: "Формат даты: YYYY-MM-DD.",
+    GBT_INTERNAL_ERROR: "Операция не выполнена. Подробности в журнале.",
+    GBT_CONNECT_FAILED: "Не удалось подключиться. Проверьте IP и сеть.",
+    GBT_PROGRAM_NOT_FOUND: "Программа не найдена. Проверьте имя программы.",
+    GBT_FILE_NOT_READABLE: "Выбранный файл отсутствует или недоступен для чтения.",
+    GBT_P_READ_NEED_PROGRAM: "Для чтения регистров P требуется имя программы.",
+    GBT_P_WRITE_NEED_PROGRAM: "Перед записью регистров P укажите имя программы.",
+    GBT_P_SERVICE_UNREACHABLE: "Не удаётся подключиться к сервису регистров P. Проверьте порт 5606 контроллера и сеть.",
+    GBT_UNSUPPORTED_REGISTER_TYPE: "Неподдерживаемый тип регистра.",
+    GBT_OPENPYXL_MISSING: "openpyxl не установлен; Excel обработать нельзя.",
+    GBT_SDK_NOT_FOUND: "Agilebot Python SDK не найден.",
+    GBT_SIDECAR_MISSING: "Компонент связи с роботом не найден. Переустановите приложение.",
+    GBT_EXTENSION_INSTALL_FAILED: "Не удалось установить плагин или зависимость. См. журнал."
   },
   conflict: {
     title: "Конфликт регистров",
@@ -28,6 +49,7 @@ export default {
     connecting: "Подключение…",
     connectDebug: "Режим отладки (реальный робот не подключён).",
     connectFailed: "Не удалось подключиться.",
+    disconnected: "Соединение отключено.",
     unsupportedRobotModel:
       "Нераспознанная модель робота (допустимы только GBT-P, GBT-C, GBT-S). Сеанс разорван. Проверьте модель или обратитесь в поддержку.",
     needConnect: "Сначала подключитесь к роботу.",
@@ -39,6 +61,8 @@ export default {
     pWriteNeedProgram: "Перед записью регистров P укажите имя программы.",
     noValidRegIds: "В данных предпросмотра нет допустимых ID регистров.",
     importCancelled: "Импорт отменён.",
+    applyDone: "Готово: успешно {success}, пропущено {skipped}, ошибок {failed}.",
+    applyFailed: "Запись выполнена не полностью: успешно {success}, пропущено {skipped}, ошибок {failed}.",
     countPositive: "Количество должно быть больше 0.",
     pCreateNeedProgram: "Перед созданием регистров P укажите имя программы.",
     createCancelled: "Пакетное создание отменено."
@@ -82,6 +106,8 @@ export default {
     whlPathPlaceholder: "Используйте «Выбрать файл зависимости» ниже",
     pickExt: "Выбрать файл плагина",
     pickWhl: "Выбрать файл зависимости",
+    fileFilterExt: "Плагин GBT (.gbtapp)",
+    fileFilterWhl: "Пакет зависимости (.whl)",
     installExt: "Установить плагин",
     installWhl: "Установить зависимость",
     noExtFile: "Сначала выберите файл плагина.",
@@ -133,5 +159,28 @@ export default {
   },
   lang: {
     switcherTitle: "Сменить язык интерфейса"
+  },
+  response: {
+    disconnected: "Соединение отключено.",
+    save_cancelled: "Сохранение отменено.",
+    export_saved: "Файл Excel экспортирован.",
+    template_saved: "Шаблон экспортирован.",
+    logs_exported: "Экспортировано файлов журнала: {count}.",
+    no_logs: "Журналы за выбранную дату не найдены.",
+    program_data_exported: "Данные программы экспортированы (файлов: {count}).",
+    wheel_installed: "Установка wheel завершена.",
+    operation_failed: "Операция не выполнена.",
+    write_skipped_debug: "Режим отладки: запись пропущена."
+  },
+  progress: {
+    readStarting: "Чтение...",
+    writeStarting: "Запись...",
+    read: "Чтение {current}/{total}, совпадений {matched}.",
+    readAll: "Чтение ID {current}, совпадений {matched}.",
+    write: "Запись {current}/{total}, выполнено {matched}.",
+    exportStarting: "Подготовка экспорта, сканирование файлов...",
+    exportScan: "Сканирование завершено: файлов к экспорту — {total}",
+    exportDownload: "Экспорт {current}/{total}; экспортировано {matched}",
+    exportZip: "Создание ZIP..."
   }
 };
