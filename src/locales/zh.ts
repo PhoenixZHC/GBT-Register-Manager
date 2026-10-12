@@ -1,6 +1,16 @@
+import { zh as discovery } from "./discovery";
 export default {
+  discovery,
+  registerAllScanHint: "兼容旧版：从 ID 1 扫描，连续 10 个空编号后停止。若有较长空档，请使用指定范围，避免漏读后面的寄存器。",
   app: { title: "捷勃特机器人工具箱", model: "机型", software: "软件", controllerIp: "控制柜：", teachPanelIp: "示教器：", robotSdk: "SDK:" },
   errors: {
+    GBT_INVALID_REGISTER_DATA: "寄存器数据无效：请检查整数 ID、重复编号、有限数值、L/R、TF/UF 和数量范围。",
+    GBT_REGISTER_READ_FAILED: "寄存器读取已中止：通信或控制柜返回异常。请查看日志中的具体错误，勿直接重试写入。",
+    GBT_RANGE_REQUIRED: "读取模式无效，请选择指定范围或全部。",
+    GBT_WRITE_INTERRUPTED: "写入已中断，当前项结果可能未知，后续项未执行。请核对设备后再操作。",
+    GBT_OPERATION_TIMEOUT: "操作超时，通信进程已回收。写入可能已部分生效，请核对设备，勿直接重试。",
+    GBT_OPERATION_CANCELLED: "操作已取消；如涉及写入，请核对设备上的实际结果。",
+
     appRuntime: "应用运行出现异常，请查看控制台日志。",
     GBT_CONNECTION_LOCK_ERROR: "应用状态异常，请重启后重试。",
     GBT_ROBOT_OP_BUSY: "正在执行其他操作，请稍候。",

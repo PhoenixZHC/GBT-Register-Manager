@@ -1,4 +1,23 @@
 export type RegisterType = "R" | "P" | "PR";
+
+export interface DiscoveryInterface { id: string; name: string; mac: string }
+export interface DiscoveryWarning { code: string; interfaceId?: string; name?: string }
+export interface DiscoveryCheck {
+  status: string;
+  interfaces: DiscoveryInterface[];
+  warnings: DiscoveryWarning[];
+}
+export interface DiscoveredController {
+  ip: string; mac: string; interfaceIds: string[]; mask?: string; gateway?: string;
+}
+export interface DiscoveryEvent {
+  scanId: string;
+  kind: "device" | "warning" | "finished" | "error";
+  device?: DiscoveredController;
+  code?: string;
+  interfaceId?: string;
+  reason?: "timeout" | "cancelled";
+}
 export type CoordValue = "L" | "R";
 export type ReadMode = "range" | "all";
 export type ConflictPolicy = "overwrite" | "skip";

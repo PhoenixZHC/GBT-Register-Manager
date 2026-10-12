@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::thread;
 use tauri::{Emitter, Manager, State, Wry};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
@@ -14,6 +13,9 @@ type AppHandle = tauri::AppHandle<Wry>;
 type WebviewWindow = tauri::WebviewWindow<Wry>;
 
 mod extension_install;
+mod controller_discovery;
+#[cfg(windows)]
+mod discovery_job;
 mod sftp_export;
 
 #[cfg(windows)]
@@ -53,8 +55,6 @@ const DEBUG_BYPASS_IP: &str = "255.255.255.255";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-const FRAME_BEGIN: &str = "<<<GBT-BEGIN>>>";
-const FRAME_END: &str = "<<<GBT-END>>>";
 
 // ---------- 日志 -----------------------------------------------------------
 
@@ -269,22 +269,6 @@ fn connection_payload_fields(conn: &ConnectionState) -> serde_json::Map<String, 
     m
 }
 
-fn friendly_python_error(raw: &str) -> String {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        gbt_log("python sidecar crashed with no stderr");
-    } else {
-        let last = raw
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or(raw)
-            .trim();
-        gbt_log(&format!("python sidecar stderr: {last}"));
-    }
-    GBT_INTERNAL_ERROR.to_string()
-}
-
 // ---------- sidecar 调用 ---------------------------------------------------
 
 enum Sidecar {
@@ -312,7 +296,10 @@ fn resolve_sidecar() -> Result<Sidecar, String> {
                 .ok_or_else(|| internal_ipc_err("bridge.py path invalid"))?
                 .to_path_buf();
             return Ok(Sidecar::DevScript {
-                python: "python".into(),
+                python: {
+                    let venv = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.venv/Scripts/python.exe");
+                    if venv.is_file() { venv.to_string_lossy().into_owned() } else { "python".into() }
+                },
                 script,
                 cwd,
             });
@@ -380,86 +367,25 @@ fn build_sidecar_command(sidecar: &Sidecar) -> Command {
     cmd
 }
 
-fn extract_frame(stdout: &[u8]) -> Result<Value, String> {
-    let mut s = stdout;
-    if s.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        s = &s[3..];
-    }
-    let text = std::str::from_utf8(s).map_err(|e| internal_ipc_err(&format!("python stdout utf8: {e}")))?;
-    let begin = text
-        .find(FRAME_BEGIN)
-        .ok_or_else(|| internal_ipc_err("python stdout missing GBT-BEGIN frame"))?;
-    let rest = &text[begin + FRAME_BEGIN.len()..];
-    let end = rest
-        .find(FRAME_END)
-        .ok_or_else(|| internal_ipc_err("python stdout missing GBT-END frame"))?;
-    let body = rest[..end].trim();
-    serde_json::from_str::<Value>(body).map_err(|e| internal_ipc_err(&format!("python frame json: {e}")))
+static ROBOT_SHUTDOWN: OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> = OnceLock::new();
+
+fn run_bounded_robot(payload: Value, event: impl FnMut(Value)) -> Result<Value, String> {
+    let action = payload["action"].as_str().unwrap_or("?");
+    let seconds = if matches!(action, "apply_rows" | "read_preview") { 900 } else { 120 };
+    let cancel = ROBOT_SHUTDOWN.get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).clone();
+    controller_discovery::execute_robot(build_sidecar_command(&resolve_sidecar()?), payload, cancel,
+        std::time::Duration::from_secs(seconds), event).map_err(|error| {
+            gbt_log(&format!("robot sidecar failed: {error}"));
+            match error.as_str() {
+                "timeout" => "GBT_OPERATION_TIMEOUT".into(),
+                "cancelled" => "GBT_OPERATION_CANCELLED".into(),
+                _ => GBT_INTERNAL_ERROR.into(),
+            }
+        })
 }
 
 fn run_python_action(payload: Value) -> Result<Value, String> {
-    let action = payload
-        .get("action")
-        .and_then(|a| a.as_str())
-        .unwrap_or("?");
-    gbt_log(&format!("python spawn action={action}"));
-
-    let sidecar = resolve_sidecar()?;
-    let mut cmd = build_sidecar_command(&sidecar);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| {
-        internal_ipc_err(&format!("python spawn action={action} err={e}"))
-    })?;
-
-    // 通过 stdin 传入 JSON，避免 Windows 命令行 32K 长度限制
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| internal_ipc_err("sidecar stdin unavailable"))?;
-        let payload_bytes =
-            serde_json::to_vec(&payload).map_err(|e| internal_ipc_err(&format!("serialize payload: {e}")))?;
-        stdin
-            .write_all(&payload_bytes)
-            .map_err(|e| internal_ipc_err(&format!("write sidecar stdin: {e}")))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| internal_ipc_err(&format!("wait sidecar: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        gbt_log(&format!(
-            "python exit_fail action={action} code={:?}",
-            output.status.code()
-        ));
-        return Err(friendly_python_error(&stderr));
-    }
-
-    let parsed = extract_frame(&output.stdout).map_err(|e| {
-        let stderr_tail: String = String::from_utf8_lossy(&output.stderr)
-            .chars()
-            .take(400)
-            .collect();
-        gbt_log(&format!(
-            "python frame_err action={action} msg={e} stderr_tail={stderr_tail}"
-        ));
-        e
-    })?;
-
-    gbt_log(&format!(
-        "python done action={action} stdout_bytes={}",
-        output.stdout.len()
-    ));
-    Ok(parsed)
-}
-
-fn parse_protocol_frame(body: &str) -> Result<Value, String> {
-    serde_json::from_str::<Value>(body.trim()).map_err(|e| internal_ipc_err(&format!("protocol frame json: {e}")))
+    run_bounded_robot(payload, |_| {})
 }
 
 fn emit_export_progress(
@@ -500,118 +426,12 @@ fn attach_progress_op_id(value: Value, progress_op_id: Option<u64>, session_id: 
     value
 }
 
-fn handle_stream_frame(
-    window: &WebviewWindow,
-    body: &str,
-    progress_op_id: Option<u64>,
-    session_id: u64,
-) -> Result<Option<Value>, String> {
-    let value = parse_protocol_frame(body)?;
-    if value.get("kind").and_then(Value::as_str) == Some("progress") {
-        let payload = attach_progress_op_id(value, progress_op_id, session_id);
-        window
-            .emit("register-progress", payload)
-            .map_err(|e| internal_ipc_err(&format!("emit progress failed: {e}")))?;
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
-fn run_python_action_with_progress(
-    payload: Value,
-    window: WebviewWindow,
-    progress_op_id: Option<u64>,
-    session_id: u64,
-) -> Result<Value, String> {
-    let action = payload
-        .get("action")
-        .and_then(|a| a.as_str())
-        .unwrap_or("?")
-        .to_string();
-    gbt_log(&format!("python spawn action={action} progress=1"));
-
-    let sidecar = resolve_sidecar()?;
-    let mut cmd = build_sidecar_command(&sidecar);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| {
-        internal_ipc_err(&format!("python spawn action={action} err={e}"))
-    })?;
-
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| internal_ipc_err("sidecar stdin unavailable"))?;
-        let payload_bytes =
-            serde_json::to_vec(&payload).map_err(|e| internal_ipc_err(&format!("serialize payload: {e}")))?;
-        stdin
-            .write_all(&payload_bytes)
-            .map_err(|e| internal_ipc_err(&format!("write sidecar stdin: {e}")))?;
-    }
-
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| internal_ipc_err("sidecar stderr unavailable"))?;
-    let stderr_handle = thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stderr.read_to_string(&mut buf);
-        buf
-    });
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| internal_ipc_err("sidecar stdout unavailable"))?;
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let mut body = String::new();
-    let mut in_frame = false;
-    let mut result: Option<Value> = None;
-
-    loop {
-        line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .map_err(|e| internal_ipc_err(&format!("read sidecar stdout: {e}")))?;
-        if bytes == 0 {
-            break;
+fn run_python_action_with_progress(payload: Value, window: WebviewWindow, progress_op_id: Option<u64>, session_id: u64) -> Result<Value, String> {
+    run_bounded_robot(payload, |value| {
+        if value["kind"].as_str() == Some("progress") {
+            let _ = window.emit("register-progress", attach_progress_op_id(value, progress_op_id, session_id));
         }
-        let trimmed = line.trim_end_matches(['\r', '\n']).trim_start_matches('\u{feff}');
-        if trimmed == FRAME_BEGIN {
-            in_frame = true;
-            body.clear();
-        } else if trimmed == FRAME_END {
-            if in_frame {
-                if let Some(frame) = handle_stream_frame(&window, &body, progress_op_id, session_id)? {
-                    result = Some(frame);
-                }
-            }
-            in_frame = false;
-        } else if in_frame {
-            body.push_str(trimmed);
-            body.push('\n');
-        }
-    }
-
-    let output = child
-        .wait()
-        .map_err(|e| internal_ipc_err(&format!("wait sidecar: {e}")))?;
-    let stderr = stderr_handle.join().unwrap_or_default();
-
-    if !output.success() {
-        gbt_log(&format!(
-            "python exit_fail action={action} code={:?}",
-            output.code()
-        ));
-        return Err(friendly_python_error(&stderr));
-    }
-
-    result.ok_or_else(|| internal_ipc_err("python result frame missing"))
+    })
 }
 
 /// 在 Tauri 的 blocking 线程池中运行阻塞调用，避免冻住 IPC 线程。
@@ -1521,7 +1341,6 @@ async fn export_controller_logs_zip(
     .map_err(|e| normalize_ipc_error(&e))?;
 
     if count == 0 {
-        let _ = std::fs::remove_file(&zip_path);
         return Ok(CommonResponse { code: Some("no_logs".to_string()), count: Some(0),
             ok: false,
             message: String::new(),
@@ -1600,7 +1419,6 @@ async fn export_teach_panel_logs_zip(
     .map_err(|e| normalize_ipc_error(&e))?;
 
     if count == 0 {
-        let _ = std::fs::remove_file(&zip_path);
         return Ok(CommonResponse { code: Some("no_logs".to_string()), count: Some(0),
             ok: false,
             message: String::new(),
@@ -1697,6 +1515,13 @@ pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
+        .manage(controller_discovery::DiscoveryState::default())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed) {
+                if let Some(cancel) = ROBOT_SHUTDOWN.get() { cancel.store(true, Ordering::SeqCst); }
+                controller_discovery::shutdown(window.app_handle());
+            }
+        })
         .setup(|app| {
             let handle = app.handle();
             if let Ok(dir) = handle.path().app_log_dir() {
@@ -1717,6 +1542,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            controller_discovery::check_controller_discovery,
+            controller_discovery::start_controller_discovery,
+            controller_discovery::cancel_controller_discovery,
+            controller_discovery::open_npcap_download,
             connect_robot,
             get_connection_status,
             disconnect_robot,

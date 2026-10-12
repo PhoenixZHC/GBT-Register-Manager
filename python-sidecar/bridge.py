@@ -183,7 +183,7 @@ def redirect_sdk_stdout_to_stderr() -> Iterator[None]:
 def round3(v: Any) -> float:
     x = float(v)
     if math.isnan(x) or math.isinf(x):
-        return 0.0
+        raise ValueError("Non-finite numeric value")
     return round(x, 3)
 
 
@@ -343,7 +343,7 @@ def make_headers(register_type: str) -> List[str]:
 # P 寄存器（程序位姿）服务的 HTTP 端口，与 R/PR 所用端口不同。
 P_SERVICE_PORT = 5606
 
-# 「读取全部」：从该 ID 起顺序尝试，连续失败达到上限则停止。
+# 兼容旧版「全部」扫描：连续空编号达到上限才停止，通信错误仍中止。
 READ_ALL_FIRST_ID = 1
 READ_ALL_CONSECUTIVE_FAIL_LIMIT = 10
 READ_ALL_MAX_ID = 100000
@@ -359,14 +359,82 @@ def _normalize_id(value: Any) -> Optional[int]:
     return idx
 
 
+def valid_integer(value, minimum=0, maximum=100000):
+    if isinstance(value, bool) or value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError("Invalid integer")
+    number = float(value)
+    if not math.isfinite(number) or not number.is_integer() or not minimum <= number <= maximum:
+        raise ValueError("Integer out of range")
+    return int(number)
+
+
+def validate_rows(reg_type, rows, policy):
+    if reg_type not in ("R", "PR", "P") or policy not in ("skip", "overwrite"):
+        raise ValueError("Invalid register type or policy")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 50000:
+        raise ValueError("Invalid row count")
+    seen = set()
+    output = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid row")
+        item = dict(row)
+        idx = valid_integer(row.get("ID"))
+        if idx in seen:
+            raise ValueError("Duplicate ID")
+        seen.add(idx)
+        item["ID"] = idx
+        for key in (["value"] if reg_type == "R" else ["X", "Y", "Z", "A", "B", "C"]):
+            value = row.get(key)
+            if value is None or isinstance(value, bool) or (isinstance(value, str) and not value.strip()):
+                raise ValueError("Missing numeric value")
+            item[key] = round3(value)
+        if reg_type != "R":
+            key = "Coord" if reg_type == "P" else "coord"
+            coord = str(row.get(key, row.get(key + "（L/R）", ""))).strip().upper()
+            if coord not in ("L", "R"):
+                raise ValueError("Invalid L/R posture")
+            item[key] = coord
+        if reg_type == "P":
+            for key in ("TF", "UF"):
+                item[key] = valid_integer(row.get(key))
+        output.append(item)
+    return output
+
+
+def is_missing_register(ret, controller_register=False):
+    # 通用 SDK 不存在状态，以及实机 R/PR 读取未分配编号的精确业务码。
+    # 不能只匹配 -254 或 INVALID_ARG：其他控制柜错误必须继续报错。
+    missing = getattr(StatusCodeEnum, "NOT_FOUND", None)
+    if missing is not None and ret == missing:
+        return True
+    detail = getattr(ret, "errmsg", None)
+    return (controller_register
+            and getattr(ret, "name", None) == "REG_MANAGER_INVALID_ARG"
+            and isinstance(detail, dict)
+            and detail.get("name") == "REG_MANAGER_INVALID_ARG"
+            and detail.get("inner_code") == "0001000200A40007")
+
+
+def ensure_read_status(ret, program_pose=False):
+    if program_pose and ret == StatusCodeEnum.PROGRAM_NOT_FOUND:
+        gbt_raise("GBT_PROGRAM_NOT_FOUND")
+    missing = getattr(StatusCodeEnum, "PROGRAM_POSE_NOT_FOUND", None) if program_pose else None
+    if ret != StatusCodeEnum.OK and not is_missing_register(ret, controller_register=not program_pose) and not (missing is not None and ret == missing):
+        log_py(f"Register read failed: {status_text(ret)}")
+        gbt_raise("GBT_REGISTER_READ_FAILED")
+
+
 def build_indexes(selector: Dict[str, Any]) -> List[int]:
-    mode = selector.get("mode", "range")
-    if mode == "all":
-        raise RuntimeError("GBT_INTERNAL_ERROR")
-    start_id = int(selector.get("startId", 0))
-    end_id = int(selector.get("endId", start_id))
-    if end_id < start_id:
-        start_id, end_id = end_id, start_id
+    if selector.get("mode", "range") != "range":
+        gbt_raise("GBT_RANGE_REQUIRED")
+    try:
+        start_id = valid_integer(selector.get("startId"))
+        end_id = valid_integer(selector.get("endId"))
+        if end_id < start_id or end_id - start_id >= 10000:
+            raise ValueError("Invalid range")
+    except (ValueError, TypeError, OverflowError):
+        gbt_raise("GBT_INVALID_REGISTER_DATA")
     return list(range(start_id, end_id + 1))
 
 
@@ -469,6 +537,7 @@ def read_r(arm, indexes: List[int], progress: Optional[ProgressCallback] = None)
             if progress:
                 progress(pos, len(indexes), len(rows))
             value, ret = arm.register.read_R(idx)
+            ensure_read_status(ret)
             if ret == StatusCodeEnum.OK:
                 rows.append({"type": "R", "ID": idx, "value": round3(value)})
     return rows
@@ -483,8 +552,9 @@ def read_pr(arm, indexes: List[int], progress: Optional[ProgressCallback] = None
             try:
                 pose, ret = arm.register.read_PR(idx)
             except Exception as exc:
-                log_py(f"read_pr skip id={idx} exc={exc!r}")
-                continue
+                log_py(f"read_pr failed id={idx} exc={exc!r}")
+                gbt_raise("GBT_REGISTER_READ_FAILED")
+            ensure_read_status(ret)
             if ret == StatusCodeEnum.OK:
                 try:
                     position = pose.poseRegisterData.cartData.position
@@ -503,7 +573,8 @@ def read_pr(arm, indexes: List[int], progress: Optional[ProgressCallback] = None
                         }
                     )
                 except Exception as exc:
-                    log_py(f"read_pr skip malformed id={idx} exc={exc!r}")
+                    log_py(f"read_pr malformed id={idx} exc={exc!r}")
+                    gbt_raise("GBT_REGISTER_READ_FAILED")
     return rows
 
 
@@ -516,8 +587,9 @@ def read_p(arm, program_name: str, indexes: List[int], progress: Optional[Progre
             try:
                 pose, ret = arm.program_pose.read(program_name, idx)
             except Exception as exc:
-                log_py(f"read_p skip program={program_name!r} id={idx} exc={exc!r}")
-                continue
+                log_py(f"read_p failed program={program_name!r} id={idx} exc={exc!r}")
+                gbt_raise("GBT_REGISTER_READ_FAILED")
+            ensure_read_status(ret, program_pose=True)
             if ret == StatusCodeEnum.OK:
                 try:
                     position = pose.poseData.cartData.baseCart.position
@@ -540,57 +612,24 @@ def read_p(arm, program_name: str, indexes: List[int], progress: Optional[Progre
                         }
                     )
                 except Exception as exc:
-                    log_py(f"read_p skip malformed program={program_name!r} id={idx} exc={exc!r}")
+                    log_py(f"read_p malformed program={program_name!r} id={idx} exc={exc!r}")
+                    gbt_raise("GBT_REGISTER_READ_FAILED")
     return rows
 
 
-def read_r_all_scan(arm, progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
+def read_registers_all_scan(arm, reg_type: str, progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
+    """恢复 R/PR 旧版扫描规则；不能保证覆盖长空档之后的记录。"""
+    reader = read_r if reg_type == "R" else read_pr
     rows: List[Dict[str, Any]] = []
-    consec_fail = 0
-    idx = READ_ALL_FIRST_ID
-    with redirect_sdk_stdout_to_stderr():
-        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
-            value, ret = arm.register.read_R(idx)
-            if ret == StatusCodeEnum.OK:
-                rows.append({"type": "R", "ID": idx, "value": round3(value)})
-                consec_fail = 0
-            else:
-                consec_fail += 1
-            if progress:
-                progress(idx, None, len(rows))
-            idx += 1
-    return rows
-
-
-def read_pr_all_scan(arm, progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    consec_fail = 0
-    idx = READ_ALL_FIRST_ID
-    with redirect_sdk_stdout_to_stderr():
-        while idx <= READ_ALL_MAX_ID and consec_fail < READ_ALL_CONSECUTIVE_FAIL_LIMIT:
-            pose, ret = arm.register.read_PR(idx)
-            if ret == StatusCodeEnum.OK:
-                pos = pose.poseRegisterData.cartData.position
-                coord = _coord_from_pose_register(pose)
-                rows.append(
-                    {
-                        "TYPE": "PR",
-                        "ID": idx,
-                        "X": round3(pos.x),
-                        "Y": round3(pos.y),
-                        "Z": round3(pos.z),
-                        "A": round3(pos.a),
-                        "B": round3(pos.b),
-                        "C": round3(pos.c),
-                        "coord": coord,
-                    }
-                )
-                consec_fail = 0
-            else:
-                consec_fail += 1
-            if progress:
-                progress(idx, None, len(rows))
-            idx += 1
+    consecutive_empty = 0
+    for idx in range(READ_ALL_FIRST_ID, READ_ALL_MAX_ID + 1):
+        found = reader(arm, [idx])
+        rows.extend(found)
+        consecutive_empty = 0 if found else consecutive_empty + 1
+        if progress:
+            progress(idx, None, len(rows))
+        if consecutive_empty >= READ_ALL_CONSECUTIVE_FAIL_LIMIT:
+            break
     return rows
 
 
@@ -603,6 +642,8 @@ def read_p_pose_map(
     """Read all program poses and index them by valid pose.id."""
     with redirect_sdk_stdout_to_stderr():
         poses, ret = arm.program_pose.read_all_poses(program_name)
+    if ret == StatusCodeEnum.PROGRAM_NOT_FOUND:
+        gbt_raise("GBT_PROGRAM_NOT_FOUND")
     if ret != StatusCodeEnum.OK:
         log_py(f"read_p_pose_map failed program={program_name!r}: {status_text(ret)}")
         if not strict:
@@ -653,7 +694,8 @@ def read_p_all_scan(
                 }
             )
         except Exception as exc:
-            log_py(f"read_p_all_scan skip pose id={getattr(pose, 'id', '?')} exc={exc!r}")
+            log_py(f"read_p_all_scan malformed pose exc={exc!r}")
+            gbt_raise("GBT_REGISTER_READ_FAILED")
         if progress:
             progress(step, total, len(rows))
     return rows
@@ -663,6 +705,8 @@ def read_preview(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     reg_type = req["registerType"]
     selector = req.get("selector", {})
     mode = selector.get("mode", "range")
+    if mode != "all":
+        build_indexes(selector)
     program_name = req.get("programName")
     controller_ip = conn["controller_ip"]
     log_py(
@@ -680,12 +724,10 @@ def read_preview(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     progress = lambda current, total, matched: emit_progress("read", current, total, matched)
     try:
         if mode == "all":
-            if reg_type == "R":
-                rows = read_r_all_scan(arm, progress)
-            elif reg_type == "PR":
-                rows = read_pr_all_scan(arm, progress)
-            elif reg_type == "P":
+            if reg_type == "P":
                 rows = read_p_all_scan(arm, program_name, progress)
+            elif reg_type in ("R", "PR"):
+                rows = read_registers_all_scan(arm, reg_type, progress)
             else:
                 gbt_raise("GBT_UNSUPPORTED_REGISTER_TYPE")
         elif reg_type == "R":
@@ -708,6 +750,7 @@ def write_r(arm, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
     value = round3(row["value"])
     with redirect_sdk_stdout_to_stderr():
         _, ret = arm.register.read_R(idx)
+    ensure_read_status(ret)
     exists = ret == StatusCodeEnum.OK
     if exists and policy == "skip":
         return True, "skip"
@@ -738,6 +781,7 @@ def write_pr(arm, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
     idx = int(row["ID"])
     with redirect_sdk_stdout_to_stderr():
         old, ret = arm.register.read_PR(idx)
+    ensure_read_status(ret)
     exists = ret == StatusCodeEnum.OK
     if exists and policy == "skip":
         return True, "skip"
@@ -826,7 +870,10 @@ def write_p(arm, program_name: str, row: Dict[str, Any], policy: str) -> Tuple[b
 def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     reg_type = req["registerType"]
     policy = req.get("conflictPolicy", "skip")
-    rows: List[Dict[str, Any]] = req.get("rows", [])
+    try:
+        rows = validate_rows(reg_type, req.get("rows", []), policy)
+    except (ValueError, TypeError, KeyError, OverflowError):
+        gbt_raise("GBT_INVALID_REGISTER_DATA")
     program_name = req.get("programName")
     controller_ip = conn["controller_ip"]
     log_py(
@@ -850,14 +897,21 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
             # 在写入当前寄存器之前先上报进度：current=正在写入的序号，matched=此前已完成的条数。
             # 这样前端会显示 “正在写入 1/10，已完成 0 条” -> “正在写入 2/10，已完成 1 条” ...
             emit_progress("write", pos, total, success + skipped)
-            if reg_type == "R":
-                ok, tag = write_r(arm, row, policy)
-            elif reg_type == "PR":
-                ok, tag = write_pr(arm, row, policy)
-            elif reg_type == "P":
-                ok, tag = write_p(arm, program_name, row, policy)
-            else:
-                gbt_raise("GBT_UNSUPPORTED_REGISTER_TYPE")
+            try:
+                if reg_type == "R":
+                    ok, tag = write_r(arm, row, policy)
+                elif reg_type == "PR":
+                    ok, tag = write_pr(arm, row, policy)
+                elif reg_type == "P":
+                    ok, tag = write_p(arm, program_name, row, policy)
+                else:
+                    gbt_raise("GBT_UNSUPPORTED_REGISTER_TYPE")
+            except Exception as exc:
+                # 停止后续写入；当前项结果可能未知，保留此前已确认的计数。
+                log_py(f"apply_rows interrupted: {exc!r}")
+                return {"ok": False, "code": "GBT_WRITE_INTERRUPTED",
+                        "stats": {"success": success, "skipped": skipped, "failed": len(failed) + 1},
+                        "details": failed + [f"ID={row.get('ID')}: result unknown; not attempted={total - pos}"]}
 
             if ok and tag == "skip":
                 skipped += 1
@@ -984,6 +1038,12 @@ def export_template(register_type: str, output_path: str) -> Dict[str, Any]:
 
 def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
     action = payload.get("action")
+    if action in ("check_discovery", "discover_controllers"):
+        import controller_discovery
+        if action == "check_discovery":
+            return controller_discovery.check()
+        controller_discovery.scan(payload.get("interfaceIds"), emit_frame)
+        return {"ok": True}
     if action == "read_preview":
         return read_preview(_extract_connect_params(payload), payload["request"])
     if action == "apply_rows":

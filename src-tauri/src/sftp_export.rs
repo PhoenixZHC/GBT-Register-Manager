@@ -106,7 +106,12 @@ fn tcp_connect(host: &str) -> Result<TcpStream, String> {
 
 fn ssh_session(host: &str, password: &str) -> Result<Session, String> {
     let tcp = tcp_connect(host)?;
+    ssh_session_on_stream(tcp, host, password, 30_000)
+}
+
+fn ssh_session_on_stream(tcp: TcpStream, host: &str, password: &str, timeout_ms: u32) -> Result<Session, String> {
     let mut sess = Session::new().map_err(|e| sftp_ipc_err(&format!("ssh session new: {e}")))?;
+    sess.set_timeout(timeout_ms);
     sess.set_tcp_stream(tcp);
     sess.handshake()
         .map_err(|e| sftp_ipc_err(&format!("ssh handshake {host}: {e}")))?;
@@ -264,11 +269,14 @@ fn download_remote_file(sftp: &Sftp, remote_path: &Path, local_path: &Path) -> R
 /// 同时写入目录条目，保证空目录也能保留在 ZIP 中（修复 robot_data 导出时
 /// 空子目录如 `event_history` / `nvram` / `palletizing` / `simulator` 丢失的问题）。
 fn zip_staging_dir(staging: &Path, zip_path: &Path) -> Result<(), String> {
-    let file = File::create(zip_path).map_err(|e| sftp_ipc_err(&format!("create zip: {e}")))?;
+    let parent = zip_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| sftp_ipc_err(&format!("create temporary zip: {e}")))?;
+    let file = temp.reopen().map_err(|e| sftp_ipc_err(&format!("open temporary zip: {e}")))?;
     let mut zip = ZipWriter::new(file);
     let opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
 
-    for entry in WalkDir::new(staging).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(staging) {
+        let entry = entry.map_err(|e| sftp_ipc_err(&format!("walk staging: {e}")))?;
         let rel = entry
             .path()
             .strip_prefix(staging)
@@ -293,8 +301,16 @@ fn zip_staging_dir(staging: &Path, zip_path: &Path) -> Result<(), String> {
         std::io::copy(&mut f, &mut zip)
             .map_err(|e| sftp_ipc_err(&format!("zip write {name_in_zip}: {e}")))?;
     }
-    zip.finish().map_err(|e| sftp_ipc_err(&format!("zip finish: {e}")))?;
+    let file = zip.finish().map_err(|e| sftp_ipc_err(&format!("zip finish: {e}")))?;
+    file.sync_all().map_err(|e| sftp_ipc_err(&format!("sync zip: {e}")))?;
+    drop(file);
+    temp.persist(zip_path).map_err(|e| sftp_ipc_err(&format!("replace zip: {e}")))?;
     Ok(())
+}
+
+fn zip_logs_if_found(staging: &Path, zip_path: &Path, count: usize) -> Result<usize, String> {
+    if count > 0 { zip_staging_dir(staging, zip_path)?; }
+    Ok(count)
 }
 
 fn copy_logs_to_staging(
@@ -370,11 +386,10 @@ pub fn run_export_controller_logs(
     ];
     let n = copy_logs_to_staging(&sftp, &dirs, yyyymmdd, staging.path(), on_progress)?;
     if n == 0 {
-        return Ok(0);
+        return zip_logs_if_found(staging.path(), zip_path, n);
     }
     report_progress(on_progress, "zip", n, n, n);
-    zip_staging_dir(staging.path(), zip_path)?;
-    Ok(n)
+    zip_logs_if_found(staging.path(), zip_path, n)
 }
 
 /// 导出示教器 `/root/app_log` 中指定日期的日志为 ZIP。
@@ -396,11 +411,10 @@ pub fn run_export_teach_panel_logs(
     )];
     let n = copy_logs_to_staging(&sftp, &dirs, yyyymmdd, staging.path(), on_progress)?;
     if n == 0 {
-        return Ok(0);
+        return zip_logs_if_found(staging.path(), zip_path, n);
     }
     report_progress(on_progress, "zip", n, n, n);
-    zip_staging_dir(staging.path(), zip_path)?;
-    Ok(n)
+    zip_logs_if_found(staging.path(), zip_path, n)
 }
 
 /// 递归下载控制柜 `/root/robot_data` 并打包为 ZIP（先扫描整棵目录树得到总数，再逐个下载，
@@ -487,6 +501,53 @@ pub fn parse_export_date(date_yyyy_mm_dd: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_logs_preserve_existing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup.zip");
+        std::fs::write(&backup, b"old backup").unwrap();
+        assert_eq!(zip_logs_if_found(dir.path(), &backup, 0).unwrap(), 0);
+        assert_eq!(std::fs::read(&backup).unwrap(), b"old backup");
+    }
+
+    #[test]
+    fn failed_zip_preserves_existing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup.zip");
+        std::fs::write(&backup, b"old backup").unwrap();
+        assert!(zip_staging_dir(&dir.path().join("missing"), &backup).is_err());
+        assert_eq!(std::fs::read(&backup).unwrap(), b"old backup");
+    }
+
+    #[test]
+    fn completed_zip_replaces_backup_with_valid_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("log.txt"), b"new log").unwrap();
+        let backup = dir.path().join("backup.zip");
+        std::fs::write(&backup, b"old backup").unwrap();
+        zip_logs_if_found(&source, &backup, 1).unwrap();
+        let mut archive = zip::ZipArchive::new(File::open(&backup).unwrap()).unwrap();
+        let mut text = String::new();
+        archive.by_name("log.txt").unwrap().read_to_string(&mut text).unwrap();
+        assert_eq!(text, "new log");
+    }
+
+    #[test]
+    fn silent_ssh_peer_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let started = std::time::Instant::now();
+        assert!(ssh_session_on_stream(TcpStream::connect(addr).unwrap(), "local-test", "unused", 100).is_err());
+        assert!(started.elapsed() < Duration::from_millis(450));
+        peer.join().unwrap();
+    }
 
     #[test]
     fn control_log_name_matches_day() {

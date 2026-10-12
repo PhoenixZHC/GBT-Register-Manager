@@ -1,5 +1,6 @@
 # 运行时依赖（开发期 + PyInstaller 冻结均使用这份列表）
 openpyxl>=3.1.0
+scapy==2.6.1
 
 # Agilebot Python SDK（v2.0.1.0）
 # 本地路径相对于「执行 pip 时的当前目录」。build_sidecar.ps1 在仓库根目录执行

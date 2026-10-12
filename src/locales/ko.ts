@@ -1,4 +1,7 @@
+import { ko as discovery } from "./discovery";
 export default {
+  discovery,
+  registerAllScanHint: "이전 버전 방식: ID 1부터 읽고 빈 ID가 10개 연속되면 중지합니다. 긴 빈 구간 뒤의 레지스터도 읽으려면 범위를 지정하세요.",
   app: {
     title: "제보트 로봇 도구함",
     model: "기종",
@@ -8,6 +11,13 @@ export default {
     robotSdk: "SDK:"
   },
   errors: {
+    GBT_INVALID_REGISTER_DATA: "잘못된 레지스터 데이터입니다. 정수 ID, 중복, 유한 수치, L/R, TF/UF 및 범위를 확인하세요.",
+    GBT_REGISTER_READ_FAILED: "통신 또는 컨트롤러 오류로 읽기가 중지되었습니다. 쓰기를 다시 시도하기 전에 로그를 확인하세요.",
+    GBT_RANGE_REQUIRED: "읽기 모드가 잘못되었습니다. 범위 또는 전체를 선택하세요.",
+    GBT_WRITE_INTERRUPTED: "쓰기가 중단되었습니다. 현재 결과는 불명확할 수 있으며 나머지는 실행하지 않았습니다. 장치를 확인하세요.",
+    GBT_OPERATION_TIMEOUT: "시간 초과로 통신을 종료했습니다. 일부 쓰기가 적용되었을 수 있으니 재시도 전에 장치를 확인하세요.",
+    GBT_OPERATION_CANCELLED: "작업을 취소했습니다. 장치의 실제 쓰기 결과를 확인하세요.",
+
     appRuntime: "애플리케이션 오류가 발생했습니다. 콘솔 로그를 확인하세요.",
     GBT_CONNECTION_LOCK_ERROR: "앱 상태가 비정상입니다. 다시 시작하세요.",
     GBT_ROBOT_OP_BUSY: "다른 작업이 진행 중입니다. 잠시 후 다시 시도하세요.",

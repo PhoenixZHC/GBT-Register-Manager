@@ -1,4 +1,7 @@
+import { ja as discovery } from "./discovery";
 export default {
+  discovery,
+  registerAllScanHint: "旧版互換：ID 1 から読み取り、空の ID が 10 個続くと終了します。長い空白の後も読む場合は範囲を指定してください。",
   app: {
     title: "ジエボテロボットツールボックス",
     model: "機種",
@@ -8,6 +11,13 @@ export default {
     robotSdk: "SDK："
   },
   errors: {
+    GBT_INVALID_REGISTER_DATA: "レジスタデータが無効です。整数 ID、重複、数値、L/R、TF/UF、件数を確認してください。",
+    GBT_REGISTER_READ_FAILED: "通信またはコントローラのエラーで読み取りを中止しました。書き込みを再試行する前にログを確認してください。",
+    GBT_RANGE_REQUIRED: "読み取りモードが無効です。範囲指定または全件を選択してください。",
+    GBT_WRITE_INTERRUPTED: "書き込みを中断しました。現在の結果は不明な場合があります。後続は未実行です。機器を確認してください。",
+    GBT_OPERATION_TIMEOUT: "タイムアウトにより通信を停止しました。一部が書き込まれた可能性があります。再試行前に機器を確認してください。",
+    GBT_OPERATION_CANCELLED: "処理を取り消しました。機器の書き込み結果を確認してください。",
+
     appRuntime: "アプリケーションでエラーが発生しました。コンソールログを確認してください。",
     GBT_CONNECTION_LOCK_ERROR: "アプリの状態が異常です。再起動してください。",
     GBT_ROBOT_OP_BUSY: "他の操作を実行中です。しばらくお待ちください。",

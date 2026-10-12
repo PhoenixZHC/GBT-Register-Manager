@@ -27,6 +27,7 @@ __pycache__/
 .Python
 venv/
 .venv/
+.local-testing/
 env/
 .env
 .env.*

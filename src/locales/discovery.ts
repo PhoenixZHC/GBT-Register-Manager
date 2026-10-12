@@ -1,0 +1,110 @@
+export const zh = {
+  entry: "忘记控制柜 IP？点击查找", title: "查找控制柜", back: "返回连接", adapters: "搜索网卡",
+  hint: "请将电脑与控制柜接入同一交换机或直连网线。可查找不同 IP 网段的控制柜，但不能跨路由器或隔离的 VLAN。",
+  connectionHint: "选中后只回填控制柜 IP，不自动连接。若无法连接，请检查电脑与控制柜的网络配置；TP 地址仍需手动填写。",
+  checking: "正在检测扫描组件和可用网卡…", scanning: "正在查找控制柜…", ready: "请选择网卡开始搜索。",
+  search: "重新搜索", stop: "停止搜索", recheck: "重新检测", download: "打开官方下载页面", use: "使用此 IP",
+  ip: "控制柜 IP", mac: "MAC 地址", via: "本机网卡", actions: "操作", count: "已发现 {count} 个地址",
+  complete: "本轮搜索已完成。", stopped: "搜索已停止。", empty: "本轮未发现控制柜。请检查网线、所选网卡、网络隔离及控制柜是否支持发现协议。",
+  noSelection: "请至少选择一张网卡。", partial: "部分网卡或报文处理失败，结果可能不完整。",
+  conflict: "发现同一 IP 对应多个 MAC，请检查地址冲突。", failed: "搜索未完成。", downloadFailed: "无法打开浏览器，请访问 https://npcap.com/ 自行下载。",
+  errors: {
+    missing: "未检测到 Npcap，查找控制柜功能需要此组件。请自行下载安装，安装后点击“重新检测”。手动输入 IP 连接不受影响。",
+    permission: "无法访问网卡，权限不足。请检查 Npcap 的管理员访问设置，必要时由你以管理员身份重新运行工具箱。",
+    unavailable: "Npcap 或网卡不可用。请检查驱动安装、网线和网卡状态；重新安装组件后若仍不可用，请重启工具箱。",
+    no_interfaces: "没有可用的以太网接口。请检查网线、网卡启用状态和 Npcap。",
+    component_missing: "扫描程序或 Scapy 组件缺失，请修复工具箱安装。", unsupported: "此功能目前仅支持 Windows。",
+    timeout: "检测或扫描超时，请检查驱动后重试。", busy: "上一项检测或扫描尚未结束，请稍后重试。",
+    invalid_request: "扫描参数无效，请重新进入查找页面。", protocol: "扫描程序返回了无效数据，请检查应用日志。",
+    process_failed: "扫描程序异常退出，请检查应用日志。", internal: "扫描发生内部错误，请重试或检查日志。",
+    result_limit: "发现结果达到数量上限，本轮结果可能不完整。"
+  }
+};
+export const en = {
+  entry: "Forgot the controller IP? Find it", title: "Find controllers", back: "Back to connection", adapters: "Network adapters",
+  hint: "Connect the PC and controllers to the same switch or directly by Ethernet. Different IP subnets can be discovered, but routers and isolated VLANs cannot be crossed.",
+  connectionHint: "Selection fills the controller IP only. Connect manually and check network settings if needed. Enter the teach pendant IP separately.",
+  checking: "Checking scanning components and adapters…", scanning: "Searching for controllers…", ready: "Select adapters to search.",
+  search: "Search again", stop: "Stop search", recheck: "Check again", download: "Open official download page", use: "Use this IP",
+  ip: "Controller IP", mac: "MAC address", via: "PC adapter", actions: "Action", count: "{count} address(es) found",
+  complete: "Search completed.", stopped: "Search stopped.", empty: "No controllers found in this scan. Check cables, selected adapters, network isolation and discovery protocol support.",
+  noSelection: "Select at least one adapter.", partial: "Some adapters or packets could not be processed. Results may be incomplete.",
+  conflict: "Multiple MAC addresses share an IP. Check for an address conflict.", failed: "Search did not complete.", downloadFailed: "Could not open the browser. Visit https://npcap.com/ to download.",
+  errors: {
+    missing: "Npcap was not detected. Install it yourself to find controllers, then select Check again. Manual IP connection is unaffected.",
+    permission: "Adapter access denied. Check Npcap administrator access settings; restart the toolbox as administrator if needed.",
+    unavailable: "Npcap or an adapter is unavailable. Check the driver, cables and adapter status. Restart the toolbox if necessary after repairing Npcap.",
+    no_interfaces: "No usable Ethernet interfaces. Check cables, enabled adapters and Npcap.",
+    component_missing: "The scanner or Scapy component is missing. Repair the toolbox installation.", unsupported: "This feature currently supports Windows only.",
+    timeout: "Detection or scanning timed out. Check the driver and retry.", busy: "The previous task is still running. Retry shortly.",
+    invalid_request: "Invalid scan parameters. Reopen the discovery page.", protocol: "Invalid scanner response. Check the application log.",
+    process_failed: "The scanner exited unexpectedly. Check the application log.", internal: "Internal scanning error. Retry or check the log.",
+    result_limit: "The result limit was reached. Results may be incomplete."
+  }
+};
+export const ja = {
+  entry: "コントローラーの IP を忘れましたか？検索", title: "コントローラーを検索", back: "接続画面へ戻る", adapters: "ネットワークアダプター",
+  hint: "PC とコントローラーを同じスイッチ、または LAN ケーブルで直接接続してください。異なる IP サブネットも検索できますが、ルーターや分離された VLAN は越えられません。",
+  connectionHint: "選択すると IP のみ入力されます。接続は手動で行い、必要に応じてネットワーク設定を確認してください。TP の IP は別途入力してください。",
+  checking: "スキャン機能とアダプターを確認中…", scanning: "コントローラーを検索中…", ready: "検索するアダプターを選択してください。",
+  search: "再検索", stop: "検索を停止", recheck: "再確認", download: "公式ダウンロードページ", use: "この IP を使用",
+  ip: "コントローラー IP", mac: "MAC アドレス", via: "PC アダプター", actions: "操作", count: "{count} 件のアドレスを検出",
+  complete: "検索が完了しました。", stopped: "検索を停止しました。", empty: "今回の検索では見つかりませんでした。ケーブル、アダプター、ネットワーク分離、検出プロトコル対応を確認してください。",
+  noSelection: "アダプターを 1 つ以上選択してください。", partial: "一部のアダプターまたはパケットを処理できませんでした。結果は不完全な可能性があります。",
+  conflict: "同じ IP に複数の MAC があります。IP の競合を確認してください。", failed: "検索が完了していません。", downloadFailed: "ブラウザーを開けません。https://npcap.com/ からダウンロードしてください。",
+  errors: {
+    missing: "Npcap が見つかりません。ご自身でインストール後、再確認してください。IP を手動入力する接続には影響しません。",
+    permission: "アダプターへのアクセス権限がありません。Npcap の管理者設定を確認し、必要なら管理者として再起動してください。",
+    unavailable: "Npcap またはアダプターが利用できません。ドライバー、ケーブル、アダプターを確認し、必要なら修復後にアプリを再起動してください。",
+    no_interfaces: "利用できる Ethernet インターフェースがありません。ケーブル、アダプター、Npcap を確認してください。",
+    component_missing: "スキャナーまたは Scapy がありません。アプリのインストールを修復してください。", unsupported: "現在 Windows のみ対応しています。",
+    timeout: "確認または検索がタイムアウトしました。ドライバーを確認してください。", busy: "前の処理が実行中です。しばらくして再試行してください。",
+    invalid_request: "検索パラメーターが無効です。検索画面を開き直してください。", protocol: "スキャナーの応答が無効です。ログを確認してください。",
+    process_failed: "スキャナーが異常終了しました。ログを確認してください。", internal: "内部エラーです。再試行するかログを確認してください。",
+    result_limit: "結果の上限に達しました。一部の結果が表示されていない可能性があります。"
+  }
+};
+export const ko = {
+  entry: "제어기 IP를 잊으셨나요? 검색", title: "제어기 찾기", back: "연결 화면으로", adapters: "네트워크 어댑터",
+  hint: "PC와 제어기를 같은 스위치에 연결하거나 LAN 케이블로 직접 연결하세요. 다른 IP 서브넷도 검색할 수 있지만 라우터나 격리된 VLAN은 통과할 수 없습니다.",
+  connectionHint: "선택하면 제어기 IP만 입력됩니다. 수동으로 연결하고 필요하면 네트워크 설정을 확인하세요. TP IP는 별도로 입력하세요.",
+  checking: "검색 구성 요소와 어댑터 확인 중…", scanning: "제어기 검색 중…", ready: "검색할 어댑터를 선택하세요.",
+  search: "다시 검색", stop: "검색 중지", recheck: "다시 확인", download: "공식 다운로드 페이지", use: "이 IP 사용",
+  ip: "제어기 IP", mac: "MAC 주소", via: "PC 어댑터", actions: "작업", count: "주소 {count}개 발견",
+  complete: "검색이 완료되었습니다.", stopped: "검색이 중지되었습니다.", empty: "이번 검색에서 제어기를 찾지 못했습니다. 케이블, 어댑터, 네트워크 격리 및 검색 프로토콜 지원을 확인하세요.",
+  noSelection: "어댑터를 하나 이상 선택하세요.", partial: "일부 어댑터 또는 패킷을 처리하지 못했습니다. 결과가 불완전할 수 있습니다.",
+  conflict: "하나의 IP에 여러 MAC이 있습니다. 주소 충돌을 확인하세요.", failed: "검색이 완료되지 않았습니다.", downloadFailed: "브라우저를 열 수 없습니다. https://npcap.com/ 에서 다운로드하세요.",
+  errors: {
+    missing: "Npcap을 찾을 수 없습니다. 직접 설치한 후 다시 확인하세요. 수동 IP 연결에는 영향이 없습니다.",
+    permission: "어댑터 접근 권한이 없습니다. Npcap 관리자 설정을 확인하고 필요하면 관리자 권한으로 다시 실행하세요.",
+    unavailable: "Npcap 또는 어댑터를 사용할 수 없습니다. 드라이버, 케이블 및 어댑터를 확인하고 필요하면 복구 후 앱을 다시 시작하세요.",
+    no_interfaces: "사용 가능한 Ethernet 인터페이스가 없습니다. 케이블, 어댑터 및 Npcap을 확인하세요.",
+    component_missing: "검색 프로그램 또는 Scapy가 없습니다. 도구 상자 설치를 복구하세요.", unsupported: "현재 Windows만 지원합니다.",
+    timeout: "확인 또는 검색 시간이 초과되었습니다. 드라이버를 확인하세요.", busy: "이전 작업이 실행 중입니다. 잠시 후 다시 시도하세요.",
+    invalid_request: "검색 매개변수가 잘못되었습니다. 검색 페이지를 다시 여세요.", protocol: "검색 응답이 잘못되었습니다. 로그를 확인하세요.",
+    process_failed: "검색 프로그램이 비정상 종료되었습니다. 로그를 확인하세요.", internal: "내부 오류입니다. 다시 시도하거나 로그를 확인하세요.",
+    result_limit: "결과 수 제한에 도달했습니다. 결과가 불완전할 수 있습니다."
+  }
+};
+export const ru = {
+  entry: "Забыли IP контроллера? Найти", title: "Поиск контроллеров", back: "Назад к подключению", adapters: "Сетевые адаптеры",
+  hint: "Подключите ПК и контроллеры к одному коммутатору или напрямую кабелем Ethernet. Поиск возможен в разных IP-подсетях, но не через маршрутизаторы или изолированные VLAN.",
+  connectionHint: "Выбор только заполняет IP контроллера. Подключитесь вручную и при необходимости проверьте настройки сети. IP пульта вводится отдельно.",
+  checking: "Проверка компонентов и адаптеров…", scanning: "Поиск контроллеров…", ready: "Выберите адаптеры для поиска.",
+  search: "Повторить поиск", stop: "Остановить поиск", recheck: "Проверить снова", download: "Официальная страница загрузки", use: "Использовать IP",
+  ip: "IP контроллера", mac: "MAC-адрес", via: "Адаптер ПК", actions: "Действие", count: "Найдено адресов: {count}",
+  complete: "Поиск завершён.", stopped: "Поиск остановлен.", empty: "В этом поиске контроллеры не найдены. Проверьте кабели, адаптеры, изоляцию сети и поддержку протокола обнаружения.",
+  noSelection: "Выберите хотя бы один адаптер.", partial: "Не удалось обработать некоторые адаптеры или пакеты. Результаты могут быть неполными.",
+  conflict: "Одному IP соответствуют несколько MAC. Проверьте конфликт адресов.", failed: "Поиск не завершён.", downloadFailed: "Не удалось открыть браузер. Загрузите Npcap с https://npcap.com/.",
+  errors: {
+    missing: "Npcap не обнаружен. Установите его самостоятельно и нажмите «Проверить снова». Подключение по введённому IP по-прежнему доступно.",
+    permission: "Нет доступа к адаптеру. Проверьте настройки доступа Npcap и при необходимости перезапустите приложение от имени администратора.",
+    unavailable: "Npcap или адаптер недоступен. Проверьте драйвер, кабели и адаптер. После исправления при необходимости перезапустите приложение.",
+    no_interfaces: "Нет доступных интерфейсов Ethernet. Проверьте кабели, адаптеры и Npcap.",
+    component_missing: "Отсутствует сканер или Scapy. Восстановите установку приложения.", unsupported: "Функция пока поддерживает только Windows.",
+    timeout: "Время проверки или поиска истекло. Проверьте драйвер и повторите попытку.", busy: "Предыдущая задача ещё выполняется. Повторите позже.",
+    invalid_request: "Неверные параметры поиска. Откройте страницу заново.", protocol: "Некорректный ответ сканера. Проверьте журнал.",
+    process_failed: "Сканер аварийно завершился. Проверьте журнал.", internal: "Внутренняя ошибка поиска. Повторите попытку или проверьте журнал.",
+    result_limit: "Достигнут предел результатов. Список может быть неполным."
+  }
+};

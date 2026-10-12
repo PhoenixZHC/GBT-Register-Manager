@@ -226,6 +226,32 @@ body {
   background: #f5f5f7;
 }
 
+.discovery-entry {
+  margin-top: 20px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: #70baff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.discovery-entry:hover:not(:disabled) {
+  color: #a8d5ff;
+  text-decoration: underline;
+}
+
+.discovery-entry:focus-visible {
+  outline: 2px solid #70baff;
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.discovery-entry:disabled {
+  color: #929292;
+  cursor: not-allowed;
+}
+
 .connect-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(160px, 220px) auto auto;

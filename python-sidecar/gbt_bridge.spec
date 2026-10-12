@@ -13,7 +13,7 @@ block_cipher = None
 
 # 把 Agilebot SDK 整包（data/submodules）捕获进来，避免运行时动态导入失败。
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("Agilebot", "openpyxl", "websockets", "aenum", "requests"):
+for pkg in ("Agilebot", "openpyxl", "websockets", "aenum", "requests", "scapy"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -37,6 +37,14 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Npcap 由用户自行安装，不能因开发机存在驱动而被依赖收集器带入安装包。
+def is_npcap_binary(entry):
+    name = str(entry[0]).replace('\\', '/').rsplit('/', 1)[-1].lower()
+    source = str(entry[1]).replace('\\', '/').lower()
+    return name in ('wpcap.dll', 'packet.dll', 'npcap.sys', 'npf.sys', 'npcaphelper.exe') or '/npcap/' in source
+
+a.binaries = [entry for entry in a.binaries if not is_npcap_binary(entry)]
+a.datas = [entry for entry in a.datas if not is_npcap_binary(entry)]
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(

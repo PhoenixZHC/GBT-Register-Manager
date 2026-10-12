@@ -10,7 +10,23 @@
 
 This desktop app is the **Agilebot** robot **toolbox**: after a successful controller connection, you can **batch-edit R, PR, and P registers** (Excel import/export, batch create) and, over **SFTP**, **export controller / teach-pendant logs by calendar date** and **export program data (`robot_data`)** from the cabinet—without manual WinSCP steps. While connecting, a **Connecting…** message stays visible until the link is up and robot header info is loaded; the header can show **controller / teach pendant IPs**, **robot model**, and the **Agilebot.Robot.SDK.A** pip version on the cabinet (via SSH, same controller credentials as SFTP in `src-tauri/src/sftp_export.rs`). A **Plugin installation** page uploads **.gbtapp** packages and **.whl** wheels to the cabinet **Extension_Service (HTTP 5615)**.
 
-Current app version: `v1.2.8`
+Current app version: `v1.3.2`
+
+**2026-10-12: the user confirmed that v1.3.2 passed full functional testing.** See the [acceptance record](docs/acceptance-1.3.2-2026-10-12.md) for evidence and package checksums.
+
+v1.3.2 maps a missing P program to “Program not found. Check the program name.” in creation/import prechecks and range/all reads, instead of reporting a communication error. See the [verification record](docs/program-not-found-2026-10-10.md).
+
+2026-10-10: Fixed empty R/PR ID compatibility and restored the R/PR All option. Live read-only comparisons passed; see the [current acceptance record](docs/register-regression-2026-10-10.md) for write and installation coverage.
+
+## Find controllers
+
+Select **“Forgot the controller IP? Find it”** on the connection page. The discovery page searches selected Ethernet interfaces and displays IP addresses, MAC addresses and source adapters as replies arrive. Stop, repeat the search or select **“Use this IP”** to fill the controller field. Selection does not connect automatically, change the teach pendant IP or modify network settings.
+
+Npcap is checked **only when entering discovery or explicitly checking/searching again**. Installation and normal toolbox startup do not check it. Npcap is not bundled, downloaded or installed by the toolbox. If missing, install it yourself from the [official website](https://npcap.com/#download), then check again. Manual IP connection remains available. Permission, driver and adapter errors are reported separately.
+
+The PC and controller must share a reachable Layer 2 network, and the controller must support the discovery protocol. Different IP subnets may be discovered, but routers and isolated VLANs cannot be crossed. Discovery does not guarantee SDK connectivity. The user confirmed discovery works and v1.3.2 passed full functional testing on 2026-10-12; this does not establish compatibility with every model, firmware or adapter combination.
+
+See the [development and acceptance plan](docs/superpowers/plans/2026-10-09-controller-discovery.md).
 
 ## Compatible SDK
 
@@ -28,7 +44,7 @@ Agilebot Python SDK | v2.0.1.0
 
 2. **Batch create**: Create registers of the selected type in a contiguous range by **start ID** and **count**; **P** requires a program name and is subject to **Limitations** below.
 
-3. **Register data export**: Read from the robot by **ID range** or **All**, preview in a table, and **export to Excel**. **All** reads sequentially from register **ID 1**; when **10 consecutive** reads fail, scanning stops and all successfully read records so far are returned (suited to data that is contiguous from ID 1).
+3. **Register data export**: R/PR support a specified range (at most 10000 IDs) or All. All restores the legacy scan from ID 1, stopping after 10 consecutive empty IDs; use a range to include records beyond longer gaps. P retains full SDK enumeration. Communication and unrecognized controller errors still stop the read.
 
 4. **Register data import**: **Import Excel**, preview, then **write to the robot**; if target IDs already exist, choose **overwrite**, **skip existing**, or **cancel**. **Export template** (headers only) is supported for offline editing.
 
@@ -49,7 +65,7 @@ Agilebot Python SDK | v2.0.1.0
 1. Open the app, enter the **controller cabinet IP** (optional **teach pendant IP**), and click **Connect** (the sidecar uses the SDK **local proxy** path for reliable access to **P** registers and related service ports; **Connecting…** is shown until ready, then a success message).
 2. In the left sidebar, choose **Batch create**, **Register data export**, **Register data import**, **Logs / programs & data export**, or **Plugin installation**.
 3. On register pages: select **R**, **P**, or **PR** first; for **P**, enter the **program name** wherever required.
-4. **Register table export only**: set a range or **All** → **Read from robot** → check the table → **Export to Excel** if needed.
+4. **Register table export only**: set a range or choose **All** → **Read from robot** → check the table → **Export to Excel**. Use a range for R/PR records separated by long gaps.
 5. **Write from sheet**: **Import Excel** (or edit after read) → **Write to robot** → resolve conflicts if prompted.
 6. **Logs / programs & data**: On **Logs / programs & data export**, pick the date (for log exports) → click the desired button → choose the ZIP path in the save dialog.
 7. **Plugin installation**: On **Plugin installation**, pick a local **.gbtapp** or **.whl** → run the matching **Install** action (this PC must reach cabinet **5615**).
@@ -68,13 +84,15 @@ Agilebot Python SDK | v2.0.1.0
 
 ## Limitations (read before production use)
 
-- **“Read all”:** There is no small fixed ID window. Scanning starts at **ID 1** in order; each failed read adds to a **consecutive failure** count (a successful read resets it). After **10 consecutive failures**, scanning stops and only earlier successful reads are kept. If register IDs are **not contiguous** and there are large gaps, the result may stop before the real maximum ID—use a **custom range** instead. To avoid overly long scans, the implementation also stops at an **ID ceiling of 100000**.
+- **Ranges and validation:** R/PR All uses the legacy ten-empty-ID stopping rule; use a range to read beyond long gaps. IDs must be integers from 0 to 100000; the device still determines which IDs can be created. Entire batches are validated before writing; duplicate IDs, non-finite numbers and invalid pose fields are rejected. Interrupted or timed-out writes require verification on the device before retrying.
 
 - **`/root/app_log` date matching:** The selected calendar day is matched as an `YYYYMMDD` token inside the filename. The token must not be immediately adjacent to other digits on both sides, to avoid false positives (e.g. `service_202605111.log` is not treated as May 11).
 
 ## Development & testing
 
-- **On-hardware verification:** Validated on a real controller / teach-pendant setup (register read/write and batch flows, Excel import/export, date-based log and `robot_data` export, `.gbtapp` / `.whl` plugin install).
+- **Current acceptance:** the user confirmed full functional testing of v1.3.2 on 2026-10-12, closing the missing-P-program fix. ViteInPinza remains excluded because of its own program issue. See the [acceptance record](docs/acceptance-1.3.2-2026-10-12.md).
+- **Local verification on 2026-10-09:** 50 passed, 0 failed (Python 22, Rust 19, isolated frontend 5, build failure protection 4). Type checking, frontend build, frozen sidecar and NSIS debug installer build passed. Browser tests used mock IPC and do not establish native desktop or hardware acceptance. See the [repair and verification record](docs/review-fixes-2026-10-09.md).
+- Documentation: [current state](CONTEXT.md), [architecture](ARCHITECTURE.md), [build guide](BUILD.md), [discovery plan](docs/superpowers/plans/2026-10-09-controller-discovery.md).
 - From **`src-tauri`**, run: `cargo test -p gbt-register-manager sftp_export --lib` to re-check SFTP log filename rules for controller **`/root/log`** (pure timestamp) vs **`/root/app_log`** (service logs containing the date).
 
 ## Building the Python sidecar
@@ -83,6 +101,26 @@ Agilebot Python SDK | v2.0.1.0
 - The Agilebot SDK **wheel path in `python-sidecar/requirements.txt` is relative to the repository root** (`build_sidecar.ps1` runs `pip install -r python-sidecar/requirements.txt` from the root). Place the matching **`.whl`** under **`Python_v2.0.1.0/`** in the repo as named in `requirements.txt`, or edit that line for your environment.
 
 ## Changelog
+
+### V1.3.2 (2026-10-12, functional acceptance passed)
+
+- Missing P programs now produce a specific program-name error in creation/import prechecks and range/all reads, without proceeding to writes.
+- Delivered a full Windows x64 NSIS installer with the WebView2 offline runtime; Npcap remains a separate installation.
+- User confirmed full functional testing; source, documentation and knowledge-base records synchronized.
+
+### V1.3.1 (2026-10-10)
+
+- Recognized the specific empty R/PR controller status to restore creation, import and sparse-range reads.
+- Restored R/PR All: start at ID 1 and stop after 10 consecutive empty IDs. Use explicit ranges for longer gaps. P retains SDK enumeration.
+- Verified authorized live R/PR writes and cleanup, sparse exports, P reads and native export/import preview.
+
+### V1.3.0 (2026-10-09, local development; not released)
+
+- Added a separate controller discovery page using the Layer 2 protocol, including unknown IP subnets. Npcap is checked on entering discovery and installed separately by the user.
+- Fixed discovery link contrast on the dark connection page and synchronized version fields to 1.3.0.
+- Fixed eight review findings: changing write targets, misclassified read errors, invalid input and interrupted-write reporting, old ZIP loss, unbounded communication, ignored send errors, truncated R/PR enumeration, and copying stale sidecars after build failure.
+- R/PR require explicit read ranges; P retains full enumeration. Verify device state after interrupted or timed-out writes; no automatic retry or rollback is performed.
+- Local evidence and remaining acceptance are documented above and in the [repair record](docs/review-fixes-2026-10-09.md). Entries below are historical.
 
 ### V1.2.8 (2026-06-16)
 

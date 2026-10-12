@@ -2,7 +2,29 @@
 
 本文说明如何从源码在本机构建桌面应用（Tauri 2 + Vue 3 + Python Sidecar）。功能与使用说明见 [README.md](README.md)。
 
-当前版本：**v1.2.8**。构建产物为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。
+2026-10-12 用户确认 **v1.3.2 全功能测试通过**。当前交付为下述 1.3.2 完整安装包，本次同步已核对包哈希未变；历史构建及代理当时未安装的记录保留，不再作为功能待验收结论。详见 [最新验收](docs/acceptance-1.3.2-2026-10-12.md)。
+
+当前版本：**v1.3.2**。默认构建目标为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。本轮只构建完整离线 NSIS，复用已校验的微软运行时；下方保留 1.3.1 打包历史。
+
+1.3.2 完整安装包：`src-tauri/target/release/bundle/nsis/AgilebotRobotToolbox_1.3.2_x64-setup.exe`，261098264 字节，SHA256 `798DE8280BA7C83CEAC8BC812CD87EF1F1040B18C1B4C5E0EFB8506D4349E3BE`。完整 `tauri build --config .local-testing/tauri-full-1.3.2.json --bundles nsis` 退出码 0，含 WebView2 离线安装器；安装升级未执行。
+
+历史交付（1.3.1）：完整离线 EXE 位于 `src-tauri/target/release/bundle/nsis/AgilebotRobotToolbox_1.3.1_x64-setup.exe`，261100088 字节，版本 1.3.1，SHA256 `D85F708DE188A026961682F09620CB7C4A2C6A24AED6AC30889D318D2B9A964F`。已替换下述早期精简测试包，内嵌主程序、Python 通信组件及微软 WebView2 离线安装器（214090448 字节，Authenticode Valid，Microsoft Corporation）。生成的 NSIS 脚本确认为 offlineInstaller；未执行安装。Npcap 按项目约定仍由用户另行安装，不捆绑。
+
+本次 `tauri bundle --config .local-testing/tauri-full-1.3.1.json --bundles nsis,msi` 先完成 NSIS，随后 MSI 等待 GitHub WiX 下载；为交付现成 EXE，仅停止该构建进程的下载等待。整体双格式命令不是成功退出，本次仅交付 NSIS，不声明 MSI 构建成功。原 release 程序重复打包仍有 bundle-type 标记告警，未启用 updater。
+
+2026-10-10 修复测试包：release NSIS 已生成，路径为 `src-tauri/target/release/bundle/nsis/AgilebotRobotToolbox_1.3.1_x64-setup.exe`。WebView2 离线安装器下载遇到 TLS 错误，本次局部覆盖 `webviewInstallMode=skip`，要求目标机已安装 WebView2；默认完整离线配置未变。冻结组件已验证 R/PR 及 P A1 读取导出，Python 后端完成获准的 R/PR 写入清理，release 桌面完成 R 读/导出/导入预览。P 写入、完整桌面写入和安装未验收，另有单个程序空响应待诊断，见 [本轮记录](docs/register-regression-2026-10-10.md)。
+
+审查修复与回归命令见 [v1.3.0 修复记录](docs/review-fixes-2026-10-09.md)。Sidecar 构建脚本现要求项目 `.venv`；pip、PyInstaller 或 rustc 失败即终止，不允许继续复制旧 EXE。本轮验证生成 NSIS 调试测试包，未执行安装或发布。
+
+## 查找控制柜
+
+[查找控制柜：开发方案与实施计划](docs/superpowers/plans/2026-10-09-controller-discovery.md) 保留按日期的实现证据。2026-10-12 用户已确认 v1.3.2 全功能测试通过，详见 [最新验收](docs/acceptance-1.3.2-2026-10-12.md)。Npcap 仅在进入查找页面或主动重新检测／搜索时检查，不随工具箱分发或自动安装。
+
+新增 Python 依赖 `scapy==2.6.1`，由现有 Sidecar 冻结打包；最终用户无需安装 Python 或 Go。开发建议先执行 `py -m venv .venv`，使用 `& '.\.venv\Scripts\python.exe' -m pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-build.txt` 准备环境。Rust 开发模式优先使用项目 `.venv/Scripts/python.exe`；未找到时沿用原系统 `python` 入口。
+
+在 `python-sidecar` 目录使用项目解释器运行 `& '..\.venv\Scripts\python.exe' -m PyInstaller gbt_bridge.spec`，再将生成的 EXE 按第 4 节复制至目标三元组路径。本次验证采用此方式，未调用带清理行为的脚本。`gbt_bridge.spec` 显式排除 Npcap 驱动、DLL 和辅助程序，仍需审计最终产物；构建机不需要安装 Npcap。网络扫描实测则需要用户自行安装并启动可用的 Npcap。
+
+新增测试：项目根目录运行 `& '.\.venv\Scripts\python.exe' -m unittest discover -s python-sidecar/tests`；Rust 在 `src-tauri` 运行 `cargo test -p gbt-register-manager --lib`。Rust 扫描测试使用项目 `.venv`，包括真实 Sidecar 的只读依赖检测；测试不发送发现报文。
 
 ## 1. 环境与工具
 
@@ -11,7 +33,7 @@
 | **Windows 10/11（x64）** | 当前仓库脚本与安装包目标以 Windows 为主；`bundle.targets` = **MSI** + **NSIS**。 |
 | **Node.js + npm** | 用于前端与调用 Tauri CLI；建议 LTS 版本。 |
 | **Rust（stable）** | `rustc`、`cargo`；Windows 上一般为 **MSVC 工具链**（`x86_64-pc-windows-msvc`）。需安装 **Visual Studio Build Tools**（含「使用 C++ 的桌面开发」负载）。 |
-| **Python 3.9+** | 需加入 `PATH`（`python` 或 `py` 可用）；用于开发期直连 `bridge.py`，以及 **PyInstaller 打包 sidecar**。 |
+| **Python / 项目 .venv** | 本轮使用 Python 3.13.15；先用 `py -m venv .venv` 建立环境。Sidecar 构建必须使用该环境，其他 Python 版本尚未在本轮验证。 |
 | **WiX Toolset 3.11** | 打 MSI 时 Tauri 会用到；本仓库通过脚本安装到 `%LOCALAPPDATA%\tauri\WixTools314`。 |
 | **NSIS** | 打 NSIS `-setup.exe` 时 Tauri 会用到；脚本会下载到 `%LOCALAPPDATA%\tauri\NSIS`。 |
 
@@ -58,7 +80,7 @@ src-tauri/binaries/gbt-bridge-<target-triple>.exe
 
 64 位 Windows 一般为 `gbt-bridge-x86_64-pc-windows-msvc.exe`。
 
-开发模式（`npm run tauri:dev`）下 Rust 走调试分支，直接调用系统 Python + `python-sidecar/bridge.py`，**不依赖** 上述 exe；但 `cargo`/Tauri 仍会检查 `binaries/` 目录占位，详见 `src-tauri/binaries/README.md`。
+开发模式（`npm run tauri:dev`）下 Rust 走调试分支，优先调用项目 `.venv` 中的 Python + `python-sidecar/bridge.py`，**不依赖** 上述 exe；但 `cargo`/Tauri 仍会检查 `binaries/` 目录占位，详见 `src-tauri/binaries/README.md`。
 
 ## 5. 构建正式安装包（MSI + NSIS）
 
@@ -74,7 +96,7 @@ npm run tauri:build
 2. 运行 `scripts/prepare_tauri_tools.ps1`：确认 `%LOCALAPPDATA%\tauri\WixTools314\candle.exe` 与 NSIS 已就位（不存在则按提示先执行 `npm run tauri:download-wix-nsis`）。
 3. 执行 `beforeBuildCommand`：`npm run build`（`prebuild` 再跑一次清理 → `vue-tsc --noEmit` → `vite build` → 产物写入 `dist/`）。
 4. 执行 `cargo` 编译并调用 Tauri 打包 **MSI** 与 **NSIS**。
-5. 运行 `scripts/rename_bundles.ps1`：把 `_x64_xx-XX` 语言区域后缀从 MSI/NSIS 文件名里去掉，得到干净文件名（如 `AgilebotRobotToolbox_1.2.8.msi`、`AgilebotRobotToolbox_1.2.8-setup.exe`）。
+5. 运行 `scripts/rename_bundles.ps1`：把 `_x64_xx-XX` 语言区域后缀从 MSI/NSIS 文件名里去掉，得到干净文件名（如 `AgilebotRobotToolbox_1.3.0.msi`、`AgilebotRobotToolbox_1.3.0-setup.exe`）。
 
 **产物位置**（默认 release）：
 
@@ -97,7 +119,7 @@ npm run build
 npm run tauri:dev
 ```
 
-启动 Vite 开发服务并打开带开发者工具的桌面窗口。调试期会直接调用系统 Python + `python-sidecar/bridge.py`，需本机 Python 环境与 SDK 可用。
+启动 Vite 开发服务并打开带开发者工具的桌面窗口。调试期会优先调用项目 `.venv` 中的 Python + `python-sidecar/bridge.py`，需本机 Python 环境与 SDK 可用。
 
 ## 8. 版本号修改位置
 
@@ -109,10 +131,11 @@ npm run tauri:dev
 | `package-lock.json` | 顶层 `version` 以及 `packages.""` 里的 `version` |
 | `src-tauri/tauri.conf.json` | `version` |
 | `src-tauri/Cargo.toml` | `[package].version` |
+| `src-tauri/Cargo.lock` | 本项目 `gbt-register-manager` 包版本 |
 | `src/App.vue` | `DEFAULT_APP_VERSION`（UI 兜底展示） |
 | `README.md` / `README_en.md` | `当前软件版本` / `Current app version` 以及 **Changelog** |
 
-改完建议执行一次 `npm run build` 让 `package-lock.json` 与 `Cargo.lock` 同步刷新。
+分别核对 npm 与 Cargo 锁文件中的本项目版本；`npm run build` 不会自动同步这两个锁文件。依赖不变时仅同步本项目版本字段，随后运行类型检查及相应构建验证。
 
 ## 9. 清理缓存 / 老产物
 

@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { validateRegisterRows } from "./utils/registerValidation";
 import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
+import ControllerDiscovery from "./components/ControllerDiscovery.vue";
 import { useI18n } from "vue-i18n";
 import {
   NAlert,
@@ -156,6 +158,11 @@ function promptRegisterConflict(content: string): Promise<RegisterConflictChoice
 
 const loading = ref(false);
 const connectBusy = ref(false);
+const discoveryVisible = ref(false);
+function useDiscoveredIp(value: string) {
+  ip.value = value;
+  discoveryVisible.value = false;
+}
 /** 闂佺鐭囬崘銊у幀闂?IP闂佹寧绋戦悧鍡欐崲閳ь剙鈹戞径妯轰壕缂佽鲸宀告俊?*/
 const ip = ref("");
 /** 缂備讲鍋撻柣鎴炆戝▓宀勬煕?IP闂佹寧绋戦悧鍡氥亹閺屻儲鐒诲鑸电〒楠炪垻鈧鎮堕崕鎵箔閻旂厧瀚夐柛婵嗗閻濄倕霉濠婂嫭銇濋柍褜鍓氶懝楣冩偉閸洘顥嗛柍褜鍓涢幉鐗堟媴闂堚晝绋忛梺鎸庣☉閼活垰煤閹惧瓨濮滈悗娑櫳戦敓?TP 闂佸搫鍟晶搴ㄥ汲閳ь剛绱掑畝鈧亸銊ф濮樿泛违?*/
@@ -175,7 +182,7 @@ const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
 /** 闂佸搫鐗嗛幖顐⑩枍閹烘挾顩查弶鐐靛濞?Agilebot.Robot.SDK.A 闂佺粯顨呴悧濠傦耿娴煎瓨鏅柛锔惧房H闂佹寧绋掗悺鐚歞 /opt/python3.12/bin && ./pip3.12 list`闂佹寧绋戦懟顖炴儓瀹ュ洨鐭嗛弶鐐村缁€?`+` 闂佸憡鎸哥粔宕団偓闈涚焸閹囧醇閻斿憡瀚抽梺鎸庣☉椤︻參鍩€?*/
 const robotSdkVersion = ref("");
-const DEFAULT_APP_VERSION = "1.2.8";
+const DEFAULT_APP_VERSION = "1.3.2";
 const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
@@ -246,7 +253,7 @@ function localResponseMessage(res: CommonResponse, fallbackKey: string, params: 
 
 function applyResultMessage(res: CommonResponse): string {
   if (!res.ok) {
-    if (res.code && te(`errors.${res.code}`)) return t(`errors.${res.code}`);
+    if (res.code && te(`errors.${res.code}`)) return t(`errors.${res.code}`) + (res.stats ? " " + t("messages.applyFailed", res.stats) : "");
     if (res.stats) return t("messages.applyFailed", res.stats);
     return localResponseMessage(res, "response.operation_failed");
   }
@@ -339,7 +346,7 @@ function finishRegisterProgress(
 
 // 闂佽桨鑳舵晶妤€鐣垫担琛″亾閻㈤潧甯堕柛娆忔閳ь剛鏁搁崢褔宕甸鐔翠簻?
 const ioType = ref<RegisterType>("R");
-const ioMode = ref<ReadMode>("all");
+const ioMode = ref<ReadMode>("range");
 const ioStartId = ref(1);
 const ioEndId = ref(10);
 const ioProgramName = ref("");
@@ -620,7 +627,13 @@ async function onApplyIO() {
   if (!isConnected.value) return message.warning(t("messages.needConnect"));
   if (!ioRows.value.length) return message.warning(t("messages.needPreviewData"));
   if (needProgramForIO.value && !ioProgramName.value.trim()) return message.warning(t("messages.pWriteNeedProgram"));
-  const rowIds = collectImportRowIds(ioRows.value);
+  const registerType = ioType.value;
+  const programName = ioProgramName.value.trim() || undefined;
+  const sessionId = robotSessionId();
+  const rows = JSON.parse(JSON.stringify(ioRows.value)) as Record<string, unknown>[];
+  try { validateRegisterRows(registerType, rows); }
+  catch (e) { return message.error(formatIpcError(e)); }
+  const rowIds = collectImportRowIds(rows);
   if (!rowIds.length) return message.warning(t("messages.noValidRegIds"));
   ioApplyLoading.value = true;
   loading.value = true;
@@ -630,11 +643,11 @@ async function onApplyIO() {
     const end = Math.max(...rowIds);
     progressOp = beginProgressOp();
     const existingRows = await readRegisters({
-      registerType: ioType.value,
-      programName: ioProgramName.value.trim() || undefined,
+      registerType,
+      programName,
       selector: { mode: "range", startId: start, endId: end },
       progressOpId: progressOp,
-      sessionId: robotSessionId()
+      sessionId
     });
     const existingIds = new Set<number>();
     for (const row of existingRows) {
@@ -654,12 +667,12 @@ async function onApplyIO() {
       conflictPolicy = choice === "overwrite" ? "overwrite" : "skip";
     }
     const res = await applyRegisters({
-      registerType: ioType.value,
-      programName: ioProgramName.value.trim() || undefined,
+      registerType,
+      programName,
       conflictPolicy,
-      rows: ioRows.value,
+      rows,
       progressOpId: progressOp,
-      sessionId: robotSessionId()
+      sessionId
     });
     if (res.ok) {
       ioDetails.value = [];
@@ -833,13 +846,13 @@ async function onInstallPluginWhl() {
   }
 }
 
-function buildCreateRows(start: number, count: number): Record<string, unknown>[] {
+function buildCreateRows(start: number, count: number, registerType: RegisterType): Record<string, unknown>[] {
   const rows: Record<string, unknown>[] = [];
   for (let i = 0; i < count; i += 1) {
     const id = start + i;
-    if (createType.value === "R") {
+    if (registerType === "R") {
       rows.push({ type: "R", ID: id, value: 0 });
-    } else if (createType.value === "PR") {
+    } else if (registerType === "PR") {
       rows.push({
         TYPE: "PR",
         ID: id,
@@ -882,8 +895,14 @@ function createConflictContent(idsText: string): string {
 
 async function onCreateRegisters() {
   if (!isConnected.value) return message.warning(t("messages.needConnect"));
-  const start = Math.max(0, Number(createStartId.value || 0));
-  const count = Math.max(1, Number(createCount.value || 0));
+  const registerType = createType.value;
+  const programName = createProgramName.value.trim() || undefined;
+  const sessionId = robotSessionId();
+  const start = Number(createStartId.value);
+  const count = Number(createCount.value);
+  if (!Number.isInteger(start) || !Number.isInteger(count) || start < 0 || count < 1 || count > 10000 || start + count - 1 > 100000) {
+    return message.error(t("errors.GBT_INVALID_REGISTER_DATA"));
+  }
   if (count <= 0) return message.warning(t("messages.countPositive"));
   if (needProgramForCreate.value && !createProgramName.value.trim()) return message.warning(t("messages.pCreateNeedProgram"));
   createLoading.value = true;
@@ -893,11 +912,11 @@ async function onCreateRegisters() {
     const end = start + count - 1;
     progressOp = beginProgressOp();
     const existing = await readRegisters({
-      registerType: createType.value,
-      programName: createProgramName.value.trim() || undefined,
+      registerType,
+      programName,
       selector: { mode: "range", startId: start, endId: end },
       progressOpId: progressOp,
-      sessionId: robotSessionId()
+      sessionId
     });
     let conflictPolicy: ConflictPolicy = "skip";
     if (existing.length > 0) {
@@ -917,14 +936,14 @@ async function onCreateRegisters() {
       }
       conflictPolicy = choice === "overwrite" ? "overwrite" : "skip";
     }
-    const rows = buildCreateRows(start, count);
+    const rows = buildCreateRows(start, count, registerType);
     const res = await applyRegisters({
-      registerType: createType.value,
-      programName: createProgramName.value.trim() || undefined,
+      registerType,
+      programName,
       conflictPolicy,
       rows,
       progressOpId: progressOp,
-      sessionId: robotSessionId()
+      sessionId
     });
     if (res.ok) {
       createDetails.value = [];
@@ -1027,7 +1046,8 @@ onUnmounted(() => {
     </header>
     <main class="main-area">
       <div class="content-inner" :class="{ 'content-inner--workspace': isConnected }">
-        <section v-if="!isConnected" class="hero-connect connect-only">
+        <ControllerDiscovery v-if="!isConnected && discoveryVisible" @back="discoveryVisible = false" @select="useDiscoveredIp" />
+        <section v-else-if="!isConnected" class="hero-connect connect-only">
           <h1 class="section-title">{{ t("connect.title") }}</h1>
           <div class="connect-grid">
             <n-input
@@ -1052,24 +1072,25 @@ onUnmounted(() => {
             />
             <n-button type="primary" :loading="connectBusy" :disabled="connectBusy" @click="onConnect">{{ t("connect.connect") }}</n-button>
           </div>
+          <button type="button" class="discovery-entry" :disabled="connectBusy" @click="discoveryVisible = true">{{ t("discovery.entry") }}</button>
         </section>
 
         <div v-else class="workspace-shell">
           <aside class="sidebar">
             <div class="sidebar-title">{{ t("sidebar.title") }}</div>
-            <button class="side-btn" :class="{ active: activeFeature === 'batchCreate' }" @click="activeFeature = 'batchCreate'">
+            <button :disabled="loading" class="side-btn" :class="{ active: activeFeature === 'batchCreate' }" @click="activeFeature = 'batchCreate'">
               {{ t("sidebar.batchCreate") }}
             </button>
-            <button class="side-btn" :class="{ active: activeFeature === 'dataExport' }" @click="activeFeature = 'dataExport'">
+            <button :disabled="loading" class="side-btn" :class="{ active: activeFeature === 'dataExport' }" @click="activeFeature = 'dataExport'">
               {{ t("sidebar.dataExport") }}
             </button>
-            <button class="side-btn" :class="{ active: activeFeature === 'dataImport' }" @click="activeFeature = 'dataImport'">
+            <button :disabled="loading" class="side-btn" :class="{ active: activeFeature === 'dataImport' }" @click="activeFeature = 'dataImport'">
               {{ t("sidebar.dataImport") }}
             </button>
-            <button class="side-btn" :class="{ active: activeFeature === 'logDataExport' }" @click="activeFeature = 'logDataExport'">
+            <button :disabled="loading" class="side-btn" :class="{ active: activeFeature === 'logDataExport' }" @click="activeFeature = 'logDataExport'">
               {{ t("sidebar.logDataExport") }}
             </button>
-            <button class="side-btn" :class="{ active: activeFeature === 'pluginInstall' }" @click="activeFeature = 'pluginInstall'">
+            <button :disabled="loading" class="side-btn" :class="{ active: activeFeature === 'pluginInstall' }" @click="activeFeature = 'pluginInstall'">
               {{ t("sidebar.pluginInstall") }}
             </button>
           </aside>
@@ -1079,7 +1100,7 @@ onUnmounted(() => {
               <template #header>
                 <h2 class="section-title section-title--on-light">{{ t("create.cardTitle") }}</h2>
               </template>
-              <n-form label-placement="top" :show-feedback="false">
+              <n-form label-placement="top" :show-feedback="false" :disabled="loading">
                 <div class="create-inline-row">
                   <n-form-item :label="t('form.regType')" class="fixed-field fixed-field--type">
                     <n-select v-model:value="createType" :options="registerOptions" />
@@ -1109,7 +1130,7 @@ onUnmounted(() => {
               <div class="feature-io-stack">
               <n-card class="card-apple section-light" :bordered="false" size="medium">
                 <template #header><h2 class="section-title section-title--on-light">{{ t("export.title") }}</h2></template>
-                <n-form label-placement="top" :show-feedback="false">
+                <n-form label-placement="top" :show-feedback="false" :disabled="loading">
                   <div class="create-inline-row">
                     <n-form-item :label="t('form.regType')" class="fixed-field fixed-field--type">
                       <n-select v-model:value="ioType" :options="registerOptions" />
@@ -1135,6 +1156,9 @@ onUnmounted(() => {
                     <n-input v-model:value="ioProgramName" />
                   </n-form-item>
                 </n-form>
+                <n-alert v-if="ioMode === 'all' && ioType !== 'P'" type="info" :show-icon="false">
+                  {{ t("registerAllScanHint") }}
+                </n-alert>
                 <div class="toolbar-row">
                   <n-button type="primary" :disabled="loading" :loading="ioReadLoading" @click="onReadPreviewIO">
                     {{ exportReadButtonText }}
@@ -1158,7 +1182,7 @@ onUnmounted(() => {
               <div class="feature-io-stack">
               <n-card class="card-apple section-light" :bordered="false" size="medium">
                 <template #header><h2 class="section-title section-title--on-light">{{ t("import.title") }}</h2></template>
-                <n-form label-placement="top" :show-feedback="false">
+                <n-form label-placement="top" :show-feedback="false" :disabled="loading">
                   <div class="create-inline-row">
                     <n-form-item :label="t('form.regType')" class="fixed-field fixed-field--type">
                       <n-select v-model:value="ioType" :options="registerOptions" />
@@ -1207,7 +1231,7 @@ onUnmounted(() => {
               </template>
               <n-alert v-if="logExportDisabled" type="warning" class="alert-block" :title="t('logExport.needConnectHint')" />
               <n-alert v-else-if="teachPanelLogDisabled" type="info" class="alert-block" :title="t('logExport.noTeachIpHint')" />
-              <n-form label-placement="top" :show-feedback="false">
+              <n-form label-placement="top" :show-feedback="false" :disabled="loading">
                 <n-form-item :label="t('logExport.pickDate')">
                   <n-date-picker
                     v-model:value="exportLogDate"
@@ -1252,7 +1276,7 @@ onUnmounted(() => {
               </template>
               <n-alert v-if="pluginSeriesBlocksTeach" type="warning" class="alert-block" :title="t('pluginInstall.seriesNeedsTeachPanel')" />
               <div class="plugin-install-stack">
-                <n-form label-placement="top" :show-feedback="false">
+                <n-form label-placement="top" :show-feedback="false" :disabled="loading">
                   <n-form-item :label="t('pluginInstall.extPathLabel')">
                     <n-input
                       v-model:value="pluginExtLocalPath"
@@ -1274,7 +1298,7 @@ onUnmounted(() => {
                     </n-button>
                   </div>
                 </n-form>
-                <n-form label-placement="top" :show-feedback="false">
+                <n-form label-placement="top" :show-feedback="false" :disabled="loading">
                   <n-form-item :label="t('pluginInstall.whlPathLabel')">
                     <n-input
                       v-model:value="pluginWhlLocalPath"

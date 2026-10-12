@@ -99,7 +99,8 @@ export function parseExcelForPreview(file: File, registerType: RegisterType): Pr
           const normalized: Record<string, unknown> = {};
           expected.forEach((key, idx) => {
             const value = row[idx];
-            normalized[key] = typeof value === "number" ? Number(value.toFixed(3)) : value;
+            // 保留原始值供写入前校验，不能先舍入 ID/TF/UF 掩盖非法小数。
+            normalized[key] = value;
           });
           return normalized;
         });

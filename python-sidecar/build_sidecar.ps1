@@ -8,29 +8,27 @@ Set-Location $projectRoot
 Write-Host ("gbt-bridge project root = {0}" -f $projectRoot) -ForegroundColor Cyan
 
 # 2) Detect Python
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-  $python = Get-Command py -ErrorAction SilentlyContinue
+$pythonExe = Join-Path $projectRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $pythonExe)) {
+  throw 'Project .venv is missing. Run py -m venv .venv first.'
 }
-if (-not $python) {
-  Write-Error 'Python 3.9+ not found. Please install and add to PATH.'
-  exit 1
-}
-
-$pythonExe = $python.Source
 Write-Host ("gbt-bridge using python = {0}" -f $pythonExe)
 
 # 3) Install dependencies
 Write-Host 'gbt-bridge installing runtime + build dependencies ...' -ForegroundColor Cyan
 & $pythonExe -m pip install --upgrade pip | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
 & $pythonExe -m pip install -r 'python-sidecar\requirements.txt' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Runtime dependency installation failed' }
 & $pythonExe -m pip install -r 'python-sidecar\requirements-build.txt' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
 
 # 4) Build sidecar via PyInstaller
 Write-Host 'gbt-bridge running PyInstaller ...' -ForegroundColor Cyan
 Push-Location 'python-sidecar'
 try {
   & $pythonExe -m PyInstaller --noconfirm --clean 'gbt_bridge.spec'
+  if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed; refusing to copy an old executable' }
 } finally {
   Pop-Location
 }
@@ -43,6 +41,7 @@ if (-not (Test-Path $builtExe)) {
 
 # 5) Resolve Rust target triple
 $targetTriple = (& rustc -vV | Select-String 'host:' | ForEach-Object { ($_ -split ':')[1].Trim() })
+if ($LASTEXITCODE -ne 0) { throw 'rustc target detection failed' }
 if (-not $targetTriple) {
   Write-Warning 'rustc not detected. Fallback to x86_64-pc-windows-msvc.'
   $targetTriple = 'x86_64-pc-windows-msvc'
