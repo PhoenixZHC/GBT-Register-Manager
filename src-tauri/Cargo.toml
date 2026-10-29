@@ -1,6 +1,6 @@
 [package]
 name = "gbt-register-manager"
-version = "1.3.2"
+version = "1.3.6"
 description = "Agilebot robot toolbox"
 authors = ["Agilebot"]
 edition = "2021"

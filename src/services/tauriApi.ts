@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DiscoveryCheck } from "../types";
 
 export const checkControllerDiscovery = () => invoke<DiscoveryCheck>("check_controller_discovery");
-export const startControllerDiscovery = (scanId: string, interfaceIds: string[]) =>
-  invoke<void>("start_controller_discovery", { scanId, interfaceIds });
+export const startControllerDiscovery = (scanId: string) =>
+  invoke<void>("start_controller_discovery", { scanId });
 export const cancelControllerDiscovery = (scanId: string) =>
   invoke<void>("cancel_controller_discovery", { scanId });
 export const openNpcapDownload = () => invoke<void>("open_npcap_download");

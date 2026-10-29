@@ -1,5 +1,7 @@
 # Agilebot robot toolbox
 
+> 2026-10-29: The user confirmed real-robot testing passed for the delivered v1.3.6. This sync records user acceptance; it does not add device tests or establish a model/firmware or installation-upgrade matrix. Earlier pending-test statements below are historical. See docs/acceptance-1.3.6-2026-10-29.md.
+
 <div align="right">
 
 [简体中文](README.md) | [English](README_en.md)
@@ -10,9 +12,11 @@
 
 This desktop app is the **Agilebot** robot **toolbox**: after a successful controller connection, you can **batch-edit R, PR, and P registers** (Excel import/export, batch create) and, over **SFTP**, **export controller / teach-pendant logs by calendar date** and **export program data (`robot_data`)** from the cabinet—without manual WinSCP steps. While connecting, a **Connecting…** message stays visible until the link is up and robot header info is loaded; the header can show **controller / teach pendant IPs**, **robot model**, and the **Agilebot.Robot.SDK.A** pip version on the cabinet (via SSH, same controller credentials as SFTP in `src-tauri/src/sftp_export.rs`). A **Plugin installation** page uploads **.gbtapp** packages and **.whl** wheels to the cabinet **Extension_Service (HTTP 5615)**.
 
-Current app version: `v1.3.2`
+Current app version: `v1.3.6`
 
-**2026-10-12: the user confirmed that v1.3.2 passed full functional testing.** See the [acceptance record](docs/acceptance-1.3.2-2026-10-12.md) for evidence and package checksums.
+v1.3.6 continues subsequent P points after an individual communication failure, as requested. A result dialog lists success/failure counts and every failed ID with its reason, and requires explicit acknowledgment. Lost write responses are marked as unconfirmed; no automatic retry occurs. See the [result confirmation record](docs/p-write-results-1.3.6.md). P/PR CART / JOINT import/export, legacy Cartesian worksheet compatibility, stale-preview clearing and protected Excel saves remain in place. See the [point format](docs/pose-types-1.3.5.md).
+
+**2026-10-28: v1.3.3 is a discovery fix candidate awaiting hardware acceptance.** Every search automatically enumerates available adapters, listens for up to two minutes, retains valid IPs with missing/invalid reply MACs, and provides diagnostics. Historical v1.3.2 acceptance does not close the newly reported customer-site discovery issue. See the [implementation and acceptance record](docs/controller-discovery-parity-acceptance.md).
 
 v1.3.2 maps a missing P program to “Program not found. Check the program name.” in creation/import prechecks and range/all reads, instead of reporting a communication error. See the [verification record](docs/program-not-found-2026-10-10.md).
 
@@ -20,11 +24,11 @@ v1.3.2 maps a missing P program to “Program not found. Check the program name.
 
 ## Find controllers
 
-Select **“Forgot the controller IP? Find it”** on the connection page. The discovery page searches selected Ethernet interfaces and displays IP addresses, MAC addresses and source adapters as replies arrive. Stop, repeat the search or select **“Use this IP”** to fill the controller field. Selection does not connect automatically, change the teach pendant IP or modify network settings.
+Select **“Forgot the controller IP? Find it”** on the connection page. The discovery page automatically searches all usable Ethernet interfaces and displays IP addresses, MAC addresses and source adapters as replies arrive. Stop, repeat the search or select **“Use this IP”** to fill the controller field. Selection does not connect automatically, change the teach pendant IP or modify network settings.
 
 Npcap is checked **only when entering discovery or explicitly checking/searching again**. Installation and normal toolbox startup do not check it. Npcap is not bundled, downloaded or installed by the toolbox. If missing, install it yourself from the [official website](https://npcap.com/#download), then check again. Manual IP connection remains available. Permission, driver and adapter errors are reported separately.
 
-The PC and controller must share a reachable Layer 2 network, and the controller must support the discovery protocol. Different IP subnets may be discovered, but routers and isolated VLANs cannot be crossed. Discovery does not guarantee SDK connectivity. The user confirmed discovery works and v1.3.2 passed full functional testing on 2026-10-12; this does not establish compatibility with every model, firmware or adapter combination.
+The PC and controller must share a reachable Layer 2 network, and the controller must support the discovery protocol. Different IP subnets may be discovered, but routers and isolated VLANs cannot be crossed. Discovery does not guarantee SDK connectivity. Adapter selection is automatic; search again after plugging in or recovering an adapter. Results appear immediately and can be used before the scan ends. Missing/invalid MACs are indicated without hiding the IP; IPv6 results are display-only. Customer-site comparisons with the original scanner are still pending.
 
 See the [development and acceptance plan](docs/superpowers/plans/2026-10-09-controller-discovery.md).
 
@@ -78,9 +82,9 @@ Agilebot Python SDK | v2.0.1.0
 
 **R** headers: `type`, `ID`, `value`  
 
-**P** headers: `Type`, `ID`, `X`, `Y`, `Z`, `A`, `B`, `C`, `TF`, `UF`, `Coord`  
+**New P/PR format:** export the current template. PoseType selects CART (XYZABC) or JOINT (J1–J9); leave inactive coordinates blank. Keep posture, turn cycles and P frame IDs from the source point. Mixed types in one worksheet are supported.
 
-**PR** headers: `TYPE`, `ID`, `X`, `Y`, `Z`, `A`, `B`, `C`, `coord`  
+**Legacy Cartesian formats remain accepted:** P: `Type, ID, X, Y, Z, A, B, C, TF, UF, Coord`; PR: `TYPE, ID, X, Y, Z, A, B, C, coord`. A missing PoseType column means legacy CART; a blank PoseType in the new format is invalid.
 
 ## Limitations (read before production use)
 
@@ -90,7 +94,7 @@ Agilebot Python SDK | v2.0.1.0
 
 ## Development & testing
 
-- **Current acceptance:** the user confirmed full functional testing of v1.3.2 on 2026-10-12, closing the missing-P-program fix. ViteInPinza remains excluded because of its own program issue. See the [acceptance record](docs/acceptance-1.3.2-2026-10-12.md).
+- **Current acceptance:** [v1.3.6 P result confirmation](docs/p-write-results-1.3.6.md). The [point-type tests](docs/pose-types-1.3.5.md) and [discovery field comparison](docs/controller-discovery-parity-acceptance.md) are included in the delivered version accepted by the user; detailed hardware coverage was not supplied.
 - **Local verification on 2026-10-09:** 50 passed, 0 failed (Python 22, Rust 19, isolated frontend 5, build failure protection 4). Type checking, frontend build, frozen sidecar and NSIS debug installer build passed. Browser tests used mock IPC and do not establish native desktop or hardware acceptance. See the [repair and verification record](docs/review-fixes-2026-10-09.md).
 - Documentation: [current state](CONTEXT.md), [architecture](ARCHITECTURE.md), [build guide](BUILD.md), [discovery plan](docs/superpowers/plans/2026-10-09-controller-discovery.md).
 - From **`src-tauri`**, run: `cargo test -p gbt-register-manager sftp_export --lib` to re-check SFTP log filename rules for controller **`/root/log`** (pure timestamp) vs **`/root/app_log`** (service logs containing the date).
@@ -101,6 +105,13 @@ Agilebot Python SDK | v2.0.1.0
 - The Agilebot SDK **wheel path in `python-sidecar/requirements.txt` is relative to the repository root** (`build_sidecar.ps1` runs `pip install -r python-sidecar/requirements.txt` from the root). Place the matching **`.whl`** under **`Python_v2.0.1.0/`** in the repo as named in `requirements.txt`, or edit that line for your environment.
 
 ## Changelog
+
+### V1.3.3 (2026-10-28, hardware acceptance pending)
+
+- Automatically scan all available adapters on each search, including newly connected or recovered interfaces.
+- Listen for 120 seconds with bounded retries; retain immediate results, cancellation and IP selection.
+- Preserve valid IPs with missing/invalid reply MACs; improve local MAC matching and per-adapter diagnostics without removing protocol checks.
+- Add protocol, late-response, adapter-recovery, UI and frozen-sidecar checks. Original-scanner hardware comparisons remain pending.
 
 ### V1.3.2 (2026-10-12, functional acceptance passed)
 

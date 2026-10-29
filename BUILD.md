@@ -1,10 +1,31 @@
 # 捷勃特机器人工具箱（Agilebot robot toolbox）— 构建说明
 
+> 2026-10-29：用户确认当前交付 v1.3.6 实机测试通过。来源为本会话用户反馈；本次仅同步记录，不重跑设备测试。未提供逐项结果、机型/固件或安装升级矩阵。此前未测描述保留为历史时点，当前结论以本条及 docs/acceptance-1.3.6-2026-10-29.md 为准。
+
 本文说明如何从源码在本机构建桌面应用（Tauri 2 + Vue 3 + Python Sidecar）。功能与使用说明见 [README.md](README.md)。
 
-2026-10-12 用户确认 **v1.3.2 全功能测试通过**。当前交付为下述 1.3.2 完整安装包，本次同步已核对包哈希未变；历史构建及代理当时未安装的记录保留，不再作为功能待验收结论。详见 [最新验收](docs/acceptance-1.3.2-2026-10-12.md)。
+2026-10-28：当前版本 **v1.3.6** 增加 P 批量写入结果确认，单点通信失败后继续后续点，保留双类型导入导出及问题 3、4 修复。最新测试和校验值见 [P 结果确认验收](docs/p-write-results-1.3.6.md)。控制柜发现客户现场对照仍待完成；下方旧包保留为历史记录。
 
-当前版本：**v1.3.2**。默认构建目标为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。本轮只构建完整离线 NSIS，复用已校验的微软运行时；下方保留 1.3.1 打包历史。
+当前版本：**v1.3.6**。默认构建目标为 Windows **MSI + NSIS** 双安装包，发布者（Publisher）为 **Agilebot**。本轮完整离线 NSIS 构建成功，261918752 字节，不声明 MSI 构建或安装升级验收。复用下方命令，将 Sidecar 独立目录版本改为 1.3.6，正式前端目录为 `.local-testing/frontend-1.3.6`；局部配置 `.local-testing/tauri-full-1.3.6.json` 指向该目录，清空 beforeBuildCommand。冻结组件额外运行 `scripts/test-frozen-excel.py`（先运行 Python tests 生成测试表格）。
+
+已生成 `src-tauri/target/release/bundle/nsis/AgilebotRobotToolbox_1.3.3_x64-setup.exe`，261907814 字节，SHA256 `4821B90247A8DBB9FBCD27C9D9488BD1E578C2F8DBBF6D9A9975AFB80754FD57`。完整构建退出码 0；版本号、Sidecar 打包输入及 WebView2 离线安装器签名已核对。
+
+本轮使用独立目录，绕开会删除文件的 npm prebuild/clean 钩子；未调用清理脚本：
+
+```powershell
+# 仓库根目录：先类型检查，再构建正式前端（不含 .local-testing 的模拟入口）
+& '.\node_modules\.bin\vue-tsc.cmd' --noEmit
+# 确认上一条退出码为 0 后继续
+& '.\node_modules\.bin\vite.cmd' build --outDir '.local-testing/frontend-1.3.3'
+# 在 python-sidecar 目录执行，确认退出码为 0
+& '..\.venv\Scripts\python.exe' -m PyInstaller gbt_bridge.spec --distpath dist-1.3.3 --workpath build-1.3.3
+# 回到根目录，先验证冻结组件，再复制供 Tauri 打包
+& '.\.venv\Scripts\python.exe' -B scripts/test-frozen-discovery.py python-sidecar/dist-1.3.3/gbt-bridge.exe
+Copy-Item -LiteralPath 'python-sidecar\dist-1.3.3\gbt-bridge.exe' -Destination 'src-tauri\binaries\gbt-bridge-x86_64-pc-windows-msvc.exe' -Force
+& '.\node_modules\.bin\tauri.cmd' build --config '.local-testing/tauri-full-1.3.3.json' --bundles nsis
+```
+
+每条外部命令均须检查 `$LASTEXITCODE`，失败时停止，不复制旧产物。局部构建配置内容为 `{"build":{"beforeBuildCommand":"","frontendDist":"../.local-testing/frontend-1.3.3"}}`；其他安装配置继承正式 `tauri.conf.json`，包含 WebView2 离线运行时，不包含 Npcap。新目录首次构建无需删除旧包；重复构建前按授权范围处理构建工具的输出覆盖行为。
 
 1.3.2 完整安装包：`src-tauri/target/release/bundle/nsis/AgilebotRobotToolbox_1.3.2_x64-setup.exe`，261098264 字节，SHA256 `798DE8280BA7C83CEAC8BC812CD87EF1F1040B18C1B4C5E0EFB8506D4349E3BE`。完整 `tauri build --config .local-testing/tauri-full-1.3.2.json --bundles nsis` 退出码 0，含 WebView2 离线安装器；安装升级未执行。
 
@@ -18,7 +39,7 @@
 
 ## 查找控制柜
 
-[查找控制柜：开发方案与实施计划](docs/superpowers/plans/2026-10-09-controller-discovery.md) 保留按日期的实现证据。2026-10-12 用户已确认 v1.3.2 全功能测试通过，详见 [最新验收](docs/acceptance-1.3.2-2026-10-12.md)。Npcap 仅在进入查找页面或主动重新检测／搜索时检查，不随工具箱分发或自动安装。
+[当前修复计划](docs/superpowers/plans/2026-10-28-controller-discovery-parity.md) 与 [本轮验收](docs/controller-discovery-parity-acceptance.md) 记录 v1.3.3；旧计划保留历史证据。Npcap 仅在进入查找页面或主动重新检测／搜索时检查，不随工具箱分发或自动安装。
 
 新增 Python 依赖 `scapy==2.6.1`，由现有 Sidecar 冻结打包；最终用户无需安装 Python 或 Go。开发建议先执行 `py -m venv .venv`，使用 `& '.\.venv\Scripts\python.exe' -m pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-build.txt` 准备环境。Rust 开发模式优先使用项目 `.venv/Scripts/python.exe`；未找到时沿用原系统 `python` 入口。
 

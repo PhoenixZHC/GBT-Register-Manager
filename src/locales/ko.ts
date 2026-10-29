@@ -1,6 +1,7 @@
 import { ko as discovery } from "./discovery";
 export default {
   discovery,
+  writeResult: { title: "P 점 일괄 쓰기 결과", program: "프로그램: {name}", summary: "성공: {success}, 실패(미확인 포함): {failed}, 건너뜀: {skipped}, 미실행: {notAttempted}. 결과 미확인: {unknown}.", failures: "실패한 점을 검토하고 확인하세요:", failed: "성공하지 않음", unknown: "결과 미확인", confirm: "확인", noResult: "전체 결과를 받지 못해 성공 수와 실패 ID를 확정할 수 없습니다. 다시 쓰기 전에 로봇 데이터를 읽어 확인하세요." },
   registerAllScanHint: "이전 버전 방식: ID 1부터 읽고 빈 ID가 10개 연속되면 중지합니다. 긴 빈 구간 뒤의 레지스터도 읽으려면 범위를 지정하세요.",
   app: {
     title: "제보트 로봇 도구함",
@@ -11,8 +12,12 @@ export default {
     robotSdk: "SDK:"
   },
   errors: {
-    GBT_INVALID_REGISTER_DATA: "잘못된 레지스터 데이터입니다. 정수 ID, 중복, 유한 수치, L/R, TF/UF 및 범위를 확인하세요.",
+    GBT_P_READ_FAILED: "쓰기 전 읽기에 실패했습니다. 이 점의 쓰기 요청은 전송되지 않았습니다.",
+    GBT_P_WRITE_UNKNOWN: "쓰기 요청 오류 또는 응답 손실입니다. 이미 기록되었을 수 있으므로 읽어서 확인하세요.",
+    GBT_INVALID_REGISTER_DATA: "잘못된 데이터입니다. ID, 중복, PoseType, 사용 좌표(XYZABC 또는 J1–J9), 자세/회전 수, TF/UF 및 범위를 확인하세요. 사용하지 않는 좌표는 비워 두세요.",
     GBT_REGISTER_READ_FAILED: "통신 또는 컨트롤러 오류로 읽기가 중지되었습니다. 쓰기를 다시 시도하기 전에 로그를 확인하세요.",
+    GBT_UNSUPPORTED_POSE_TYPE: "알 수 없는 점 유형입니다. CART(직교) 및 JOINT(관절)를 지원합니다. 작업을 중단했습니다.",
+    GBT_POSE_METADATA_UNSUPPORTED: "현재 SDK의 PR 값 API는 이름/설명 변경을 지원하지 않습니다. 원래 텍스트를 유지하세요(새 점은 빈칸). 쓰기를 중단했습니다.",
     GBT_RANGE_REQUIRED: "읽기 모드가 잘못되었습니다. 범위 또는 전체를 선택하세요.",
     GBT_WRITE_INTERRUPTED: "쓰기가 중단되었습니다. 현재 결과는 불명확할 수 있으며 나머지는 실행하지 않았습니다. 장치를 확인하세요.",
     GBT_OPERATION_TIMEOUT: "시간 초과로 통신을 종료했습니다. 일부 쓰기가 적용되었을 수 있으니 재시도 전에 장치를 확인하세요.",

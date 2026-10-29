@@ -35,7 +35,7 @@ class ProtocolTests(unittest.TestCase):
         rows = discovery.parse_response(self.response(data=data), "abc12345")
         self.assertEqual([row["ip"] for row in rows], ["10.0.0.1", "192.168.2.3"])
         data["res"]["mac"] = "FF:FF:FF:FF:FF:FF"
-        self.assertEqual(discovery.parse_response(self.response(data=data), "abc12345"), [])
+        self.assertEqual(discovery.parse_response(self.response(data=data), "abc12345")[0]["macStatus"], "invalid")
 
     def test_merge_interfaces_keep_multiple_addresses(self):
         results = discovery.Results()
@@ -66,7 +66,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(discovery.interfaces(conf), [])
 
     def test_partial_interface_failure_is_reported(self):
-        with patch.object(discovery, "driver_status", return_value="ready"), patch.object(discovery, "load_backend", return_value=(None, None, None)), patch.object(discovery, "interfaces", return_value=[{"id": "good", "name": "good"}, {"id": "bad", "name": "bad"}]), patch.object(discovery, "open_socket", side_effect=[MagicMock(), PermissionError()]):
+        with patch.object(discovery, "driver_status", return_value="ready"), patch.object(discovery, "load_backend", return_value=(None, None, None)), patch.object(discovery, "interfaces", return_value=[{"id": "good", "name": "good", "mac": "02:11:22:33:44:55"}, {"id": "bad", "name": "bad", "mac": "02:11:22:33:44:55"}]), patch.object(discovery, "open_socket", side_effect=[MagicMock(), PermissionError()]):
             result = discovery.check()
         self.assertEqual(result["status"], "ready")
         self.assertEqual(len(result["interfaces"]), 1)
@@ -88,14 +88,15 @@ class ScanTests(unittest.TestCase):
                     raise send_error
                 return send_result
             sock.send.side_effect = send
-            discovery.scan(["nic", "nic"], events.append, clock=lambda: elapsed[0], sleep=sleep)
-        return events, sock, elapsed[0]
+            discovery.scan(events.append, clock=lambda: elapsed[0], sleep=sleep)
+        return [e for e in events if e["kind"] != "interfaces"], sock, elapsed[0]
 
     def test_silent_network_times_out_and_retries_are_bounded(self):
         events, sock, elapsed = self.run_scan()
         self.assertEqual(events, [{"kind": "finished", "reason": "timeout"}])
-        self.assertEqual(sock.send.call_count, 3)
-        self.assertLess(elapsed, 10.1)
+        self.assertEqual(sock.send.call_count, 14)
+        self.assertGreaterEqual(elapsed, 120)
+        self.assertLess(elapsed, 120.1)
         sock.close.assert_called_once()
 
     def test_send_failure_is_not_empty_success(self):

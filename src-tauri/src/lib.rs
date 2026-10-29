@@ -172,6 +172,37 @@ struct ApplyStats {
     success: u64,
     skipped: u64,
     failed: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    failures: Vec<PointWriteFailure>,
+    #[serde(default, rename = "notAttempted", skip_serializing_if = "Option::is_none")]
+    not_attempted: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PointWriteFailure {
+    id: u64,
+    outcome: String,
+    reason: String,
+}
+
+#[cfg(test)]
+mod write_result_tests {
+    use super::ApplyStats;
+
+    #[test]
+    fn point_failures_survive_ipc_serialization() {
+        let input = serde_json::json!({"success": 2, "failed": 1, "skipped": 0,
+            "failures": [{"id": 7, "outcome": "unknown", "reason": "GBT_P_WRITE_UNKNOWN"}], "notAttempted": 3});
+        let stats: ApplyStats = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(stats).unwrap(), input);
+    }
+
+    #[test]
+    fn old_register_results_remain_compatible() {
+        let input = serde_json::json!({"success": 2, "failed": 0, "skipped": 1});
+        let stats: ApplyStats = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(stats).unwrap(), input);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

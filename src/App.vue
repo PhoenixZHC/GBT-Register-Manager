@@ -182,7 +182,7 @@ const activeFeature = ref<FeatureKey>("batchCreate");
 const robotModel = ref("");
 /** 闂佸搫鐗嗛幖顐⑩枍閹烘挾顩查弶鐐靛濞?Agilebot.Robot.SDK.A 闂佺粯顨呴悧濠傦耿娴煎瓨鏅柛锔惧房H闂佹寧绋掗悺鐚歞 /opt/python3.12/bin && ./pip3.12 list`闂佹寧绋戦懟顖炴儓瀹ュ洨鐭嗛弶鐐村缁€?`+` 闂佸憡鎸哥粔宕団偓闈涚焸閹囧醇閻斿憡瀚抽梺鎸庣☉椤︻參鍩€?*/
 const robotSdkVersion = ref("");
-const DEFAULT_APP_VERSION = "1.3.2";
+const DEFAULT_APP_VERSION = "1.3.6";
 const appVersion = ref(DEFAULT_APP_VERSION);
 
 const langMenuOptions = [
@@ -259,6 +259,34 @@ function applyResultMessage(res: CommonResponse): string {
   }
   if (res.stats) return t("messages.applyDone", res.stats);
   return localResponseMessage(res, "response.operation_failed");
+}
+
+function confirmPointWriteResult(res: CommonResponse, programName?: string): Promise<void> {
+  const stats = res.stats;
+  const failures = stats?.failures ?? [];
+  const lines = failures.length ? failures.map((item) => {
+    const reason = te(`errors.${item.reason}`) ? t(`errors.${item.reason}`) : item.reason;
+    return `ID=${item.id} — ${t(`writeResult.${item.outcome}`)}: ${reason}`;
+  }) : (res.details ?? []);
+  return new Promise((resolve) => {
+    dialog.create({
+      type: res.ok ? "success" : "warning",
+      title: t("writeResult.title"),
+      content: () => h("div", [
+        h("p", t("writeResult.program", { name: programName ?? "" })),
+        h("p", stats ? t("writeResult.summary", { ...stats, unknown: failures.filter((x) => x.outcome === "unknown").length,
+          notAttempted: stats.notAttempted ?? 0 }) : t("writeResult.noResult")),
+        ...(!stats ? [h("p", res.message || applyResultMessage(res))] : []),
+        ...(lines.length ? [h("p", t("writeResult.failures")),
+          h("pre", { style: "max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text" }, lines.join("\n"))] : [])
+      ]),
+      positiveText: t("writeResult.confirm"),
+      maskClosable: false,
+      closable: false,
+      closeOnEsc: false,
+      onPositiveClick: () => { resolve(); }
+    });
+  });
 }
 
 function formatRegisterProgress(payload: RegisterProgressEvent): string {
@@ -417,7 +445,8 @@ function exportDateToYmd(ms: number): string {
 }
 
 const ioColumns = computed<DataTableColumns<Record<string, unknown>>>(() =>
-  expectedHeaders(ioType.value).map((key) => ({ title: key, key, ellipsis: { tooltip: true } }))
+  expectedHeaders(ioType.value).map((key) => ({ title: key, key, width: 120, ellipsis: { tooltip: true },
+    ...(key === "PoseType" ? { render: (row: Record<string, unknown>) => "PoseType" in row ? String(row.PoseType ?? "") : "CART" } : {}) }))
 );
 
 const needProgramForIO = computed(() => ioType.value === "P");
@@ -557,6 +586,8 @@ function openImportDialog() {
 async function onReadPreviewIO() {
   if (!isConnected.value) return message.warning(t("messages.needConnect"));
   if (needProgramForIO.value && !ioProgramName.value.trim()) return message.warning(t("messages.pReadNeedProgram"));
+  ioRows.value = [];
+  ioDetails.value = [];
   ioReadLoading.value = true;
   loading.value = true;
   const progressOp = beginProgressOp();
@@ -583,6 +614,8 @@ async function onImportExcel(ev: Event) {
   const input = ev.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
+  ioRows.value = [];
+  ioDetails.value = [];
   loading.value = true;
   try {
     ioRows.value = await parseExcelForPreview(file, ioType.value);
@@ -638,6 +671,7 @@ async function onApplyIO() {
   ioApplyLoading.value = true;
   loading.value = true;
   let progressOp = 0;
+  let writeStarted = false;
   try {
     const start = Math.min(...rowIds);
     const end = Math.max(...rowIds);
@@ -666,6 +700,7 @@ async function onApplyIO() {
       }
       conflictPolicy = choice === "overwrite" ? "overwrite" : "skip";
     }
+    writeStarted = true;
     const res = await applyRegisters({
       registerType,
       programName,
@@ -674,7 +709,11 @@ async function onApplyIO() {
       progressOpId: progressOp,
       sessionId
     });
-    if (res.ok) {
+    if (registerType === "P") {
+      ioDetails.value = res.details || [];
+      endProgressOp(progressOp);
+      await confirmPointWriteResult(res, programName);
+    } else if (res.ok) {
       ioDetails.value = [];
       finishRegisterProgress(progressOp, "success", applyResultMessage(res));
     } else {
@@ -682,7 +721,10 @@ async function onApplyIO() {
       finishRegisterProgress(progressOp, "error", applyResultMessage(res));
     }
   } catch (e) {
-    finishRegisterProgress(progressOp, "error", formatIpcError(e));
+    if (registerType === "P" && writeStarted) {
+      endProgressOp(progressOp);
+      await confirmPointWriteResult({ ok: false, message: formatIpcError(e) }, programName);
+    } else finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
     if (progressOp) endProgressOp(progressOp);
     ioApplyLoading.value = false;
@@ -908,6 +950,7 @@ async function onCreateRegisters() {
   createLoading.value = true;
   loading.value = true;
   let progressOp = 0;
+  let writeStarted = false;
   try {
     const end = start + count - 1;
     progressOp = beginProgressOp();
@@ -937,6 +980,7 @@ async function onCreateRegisters() {
       conflictPolicy = choice === "overwrite" ? "overwrite" : "skip";
     }
     const rows = buildCreateRows(start, count, registerType);
+    writeStarted = true;
     const res = await applyRegisters({
       registerType,
       programName,
@@ -945,7 +989,11 @@ async function onCreateRegisters() {
       progressOpId: progressOp,
       sessionId
     });
-    if (res.ok) {
+    if (registerType === "P") {
+      createDetails.value = res.details || [];
+      endProgressOp(progressOp);
+      await confirmPointWriteResult(res, programName);
+    } else if (res.ok) {
       createDetails.value = [];
       finishRegisterProgress(progressOp, "success", applyResultMessage(res));
     } else {
@@ -953,7 +1001,10 @@ async function onCreateRegisters() {
       finishRegisterProgress(progressOp, "error", applyResultMessage(res));
     }
   } catch (e) {
-    finishRegisterProgress(progressOp, "error", formatIpcError(e));
+    if (registerType === "P" && writeStarted) {
+      endProgressOp(progressOp);
+      await confirmPointWriteResult({ ok: false, message: formatIpcError(e) }, programName);
+    } else finishRegisterProgress(progressOp, "error", formatIpcError(e));
   } finally {
     if (progressOp) endProgressOp(progressOp);
     createLoading.value = false;
@@ -1172,7 +1223,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div class="table-wrap">
-                  <n-data-table flex-height style="height: 100%" :columns="ioColumns" :data="ioRows" striped :bordered="false" size="small" />
+                  <n-data-table flex-height style="height: 100%" :columns="ioColumns" :scroll-x="ioColumns.length * 120" :data="ioRows" striped :bordered="false" size="small" />
                 </div>
               </n-card>
               </div>
@@ -1211,7 +1262,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div class="table-wrap">
-                  <n-data-table flex-height style="height: 100%" :columns="ioColumns" :data="ioRows" striped :bordered="false" size="small" />
+                  <n-data-table flex-height style="height: 100%" :columns="ioColumns" :scroll-x="ioColumns.length * 120" :data="ioRows" striped :bordered="false" size="small" />
                 </div>
                 <n-alert v-if="ioDetails.length" type="warning" class="alert-block" :title="t('alert.failTop20')">
                   <div v-for="(d, i) in ioDetails.slice(0, 20)" :key="`${d}-${i}`">{{ d }}</div>

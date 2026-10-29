@@ -1,11 +1,16 @@
 import { en as discovery } from "./discovery";
 export default {
   discovery,
+  writeResult: { title: "P point batch write result", program: "Program: {name}", summary: "Succeeded: {success}; failed (including unconfirmed): {failed}; skipped: {skipped}; not attempted: {notAttempted}. Unconfirmed results: {unknown}.", failures: "Failed points — review and confirm:", failed: "Not successful", unknown: "Unconfirmed", confirm: "Confirm", noResult: "The full batch result is unavailable. Success counts and failed IDs cannot be reliably determined. Read the robot data to verify before retrying." },
   registerAllScanHint: "Legacy scan: starts at ID 1 and stops after 10 consecutive empty IDs. Use a specified range to include registers beyond longer gaps.",
   app: { title: "Agilebot robot toolbox", model: "Model", software: "Software", controllerIp: "Controller:", teachPanelIp: "Teach pendant:", robotSdk: "SDK:" },
   errors: {
-    GBT_INVALID_REGISTER_DATA: "Invalid register data. Check integer IDs, duplicates, finite values, L/R, TF/UF and limits.",
+    GBT_P_READ_FAILED: "Pre-write read failed; no write request was sent for this point.",
+    GBT_P_WRITE_UNKNOWN: "Write request failed or its response was lost. The point may have been written; read it back to verify.",
+    GBT_INVALID_REGISTER_DATA: "Invalid register data. Check IDs, duplicates, PoseType, active coordinates (XYZABC or J1–J9), posture/turn cycles, TF/UF and limits. Leave inactive coordinates blank.",
     GBT_REGISTER_READ_FAILED: "Register read stopped due to a communication or controller error. Check the log before retrying a write.",
+    GBT_UNSUPPORTED_POSE_TYPE: "Unknown point type. CART and JOINT are supported. Operation stopped; check the controller data.",
+    GBT_POSE_METADATA_UNSUPPORTED: "This SDK PR value API cannot change names/comments. Keep the original text (blank for new points) before importing. No points were written.",
     GBT_RANGE_REQUIRED: "Invalid read mode. Select a range or all.",
     GBT_WRITE_INTERRUPTED: "Write interrupted. The current result may be unknown; remaining rows were not attempted. Check the device.",
     GBT_OPERATION_TIMEOUT: "Operation timed out and the communication process was stopped. Writes may have partially applied; check the device before retrying.",

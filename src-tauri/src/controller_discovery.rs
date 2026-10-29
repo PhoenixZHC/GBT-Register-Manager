@@ -120,7 +120,7 @@ fn execute_bounded(
                 Ok(Ok(line)) => match frames.feed(&line) {
                     Ok(Some(value)) => {
                         match value["kind"].as_str() {
-                            Some("device" | "warning" | "progress") => event(value.clone()),
+                            Some("device" | "warning" | "progress" | "interfaces") => event(value.clone()),
                             Some("finished" | "error") => terminal = Some(value.clone()),
                             _ => last = Some(value),
                         }
@@ -188,8 +188,8 @@ pub async fn check_controller_discovery(app: crate::AppHandle, state: State<'_, 
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn start_controller_discovery(app: crate::AppHandle, state: State<'_, DiscoveryState>, scan_id: String, interface_ids: Vec<String>) -> Result<(), String> {
-    if scan_id.is_empty() || scan_id == "check" || scan_id.len() > 80 || interface_ids.is_empty() || interface_ids.len() > 64 || interface_ids.iter().any(|s| s.len() > 512) {
+pub fn start_controller_discovery(app: crate::AppHandle, state: State<'_, DiscoveryState>, scan_id: String) -> Result<(), String> {
+    if scan_id.is_empty() || scan_id == "check" || scan_id.len() > 80 {
         return Err("invalid_request".into());
     }
     let command = command()?;
@@ -199,8 +199,8 @@ pub fn start_controller_discovery(app: crate::AppHandle, state: State<'_, Discov
             value["scanId"] = json!(scan_id);
             let _ = app.emit("controller-discovery-event", value);
         };
-        let result = execute(command, json!({"action":"discover_controllers", "interfaceIds":interface_ids}), cancel,
-            Duration::from_secs(30), &send);
+        let result = execute(command, json!({"action":"discover_controllers"}), cancel,
+            Duration::from_secs(150), &send);
         // 必须先完成进程回收，再允许新任务开始。
         done.store(true, Ordering::SeqCst);
         match result {
@@ -297,10 +297,11 @@ mod tests {
     }
     #[test]
     fn process_stream_and_terminal_after_exit() {
-        let cmd = python("import sys; sys.stdin.read(); print('<<<GBT-BEGIN>>>\\n{\"kind\":\"device\"}\\n<<<GBT-END>>>'); print('<<<GBT-BEGIN>>>\\n{\"kind\":\"finished\",\"reason\":\"timeout\"}\\n<<<GBT-END>>>')");
+        let cmd = python("import sys; sys.stdin.read(); print('<<<GBT-BEGIN>>>\\n{\"kind\":\"interfaces\",\"interfaces\":[{\"id\":\"new-usb\"}]}\\n<<<GBT-END>>>'); print('<<<GBT-BEGIN>>>\\n{\"kind\":\"device\"}\\n<<<GBT-END>>>'); print('<<<GBT-BEGIN>>>\\n{\"kind\":\"finished\",\"reason\":\"timeout\"}\\n<<<GBT-END>>>')");
         let mut events = Vec::new();
         let result = execute(cmd, json!({}), Arc::new(AtomicBool::new(false)), Duration::from_secs(5), |v| events.push(v)).unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["interfaces"][0]["id"], "new-usb");
         assert_eq!(result["kind"], "finished");
     }
     #[test]

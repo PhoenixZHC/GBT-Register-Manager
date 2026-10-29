@@ -1,6 +1,7 @@
 import { ja as discovery } from "./discovery";
 export default {
   discovery,
+  writeResult: { title: "P 点一括書き込み結果", program: "プログラム：{name}", summary: "成功：{success}、失敗（未確認を含む）：{failed}、スキップ：{skipped}、未実行：{notAttempted}。結果未確認：{unknown}。", failures: "失敗した点を確認してください：", failed: "未成功", unknown: "結果未確認", confirm: "確認", noResult: "完全な結果を取得できず、成功数や失敗 ID を確定できません。再試行前にロボットのデータを読み取り確認してください。" },
   registerAllScanHint: "旧版互換：ID 1 から読み取り、空の ID が 10 個続くと終了します。長い空白の後も読む場合は範囲を指定してください。",
   app: {
     title: "ジエボテロボットツールボックス",
@@ -11,8 +12,12 @@ export default {
     robotSdk: "SDK："
   },
   errors: {
-    GBT_INVALID_REGISTER_DATA: "レジスタデータが無効です。整数 ID、重複、数値、L/R、TF/UF、件数を確認してください。",
+    GBT_P_READ_FAILED: "事前読み取りに失敗しました。この点の書き込み要求は送信していません。",
+    GBT_P_WRITE_UNKNOWN: "書き込み要求の異常または応答喪失です。書き込み済みの可能性があるため読み取り確認してください。",
+    GBT_INVALID_REGISTER_DATA: "データが無効です。ID、重複、PoseType、使用する座標（XYZABC または J1～J9）、姿勢・回転数、TF/UF、件数を確認してください。未使用の座標は空欄にしてください。",
     GBT_REGISTER_READ_FAILED: "通信またはコントローラのエラーで読み取りを中止しました。書き込みを再試行する前にログを確認してください。",
+    GBT_UNSUPPORTED_POSE_TYPE: "不明な点の種類です。CART（直交座標）と JOINT（関節座標）に対応しています。操作を中止しました。",
+    GBT_POSE_METADATA_UNSUPPORTED: "現在の SDK の PR 数値 API は名前・コメントの変更に対応していません。元の文字列を保持してください（新規点は空欄）。書き込みを中止しました。",
     GBT_RANGE_REQUIRED: "読み取りモードが無効です。範囲指定または全件を選択してください。",
     GBT_WRITE_INTERRUPTED: "書き込みを中断しました。現在の結果は不明な場合があります。後続は未実行です。機器を確認してください。",
     GBT_OPERATION_TIMEOUT: "タイムアウトにより通信を停止しました。一部が書き込まれた可能性があります。再試行前に機器を確認してください。",

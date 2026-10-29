@@ -16,7 +16,7 @@ export class ExcelUserError extends Error {
 export const IMPORT_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MiB
 export const IMPORT_MAX_ROWS = 50_000;
 
-const headers = {
+const legacyHeaders = {
   R: ["type", "ID", "value"],
   P: ["Type", "ID", "X", "Y", "Z", "A", "B", "C", "TF", "UF", "Coord"],
   PR: ["TYPE", "ID", "X", "Y", "Z", "A", "B", "C", "coord"]
@@ -30,20 +30,27 @@ const LEGACY_LAST_HEADER: Record<RegisterType, string | null> = {
 };
 
 export function expectedHeaders(registerType: RegisterType): string[] {
-  return [...headers[registerType]];
+  if (registerType === "R") return [...legacyHeaders.R];
+  return [registerType === "P" ? "Type" : "TYPE", "ID", "PoseType", ..."XYZABC",
+    ...Array.from({ length: 9 }, (_, i) => `J${i + 1}`),
+    ...(registerType === "P" ? ["TF", "UF", "Coord"] : ["coord"]),
+    "WristFlip", "ArmUpDown", "ArmBackFront", ...Array.from({ length: 9 }, (_, i) => `Turn${i + 1}`),
+    "Name", "Comment"];
 }
 
-function headersMatchExcel(header: string[], registerType: RegisterType): boolean {
-  const expected = expectedHeaders(registerType);
-  if (header.length !== expected.length) return false;
+function matchedHeaders(header: string[], registerType: RegisterType): string[] | null {
+  const modern = expectedHeaders(registerType);
+  if (header.length === modern.length && header.every((value, i) => value === modern[i])) return modern;
+  const expected = [...legacyHeaders[registerType]];
+  if (header.length !== expected.length) return null;
   const last = expected.length - 1;
   for (let i = 0; i < expected.length; i++) {
     if (header[i] === expected[i]) continue;
     const legacy = LEGACY_LAST_HEADER[registerType];
     if (i === last && legacy && header[i] === legacy) continue;
-    return false;
+    return null;
   }
-  return true;
+  return expected;
 }
 
 export function parseExcelForPreview(file: File, registerType: RegisterType): Promise<Record<string, unknown>[]> {
@@ -70,11 +77,11 @@ export function parseExcelForPreview(file: File, registerType: RegisterType): Pr
         }
 
         const header = (matrix[0] || []).map((cell) => String(cell ?? "").trim());
-        const expected = expectedHeaders(registerType);
-        if (!headersMatchExcel(header, registerType)) {
+        const expected = matchedHeaders(header, registerType);
+        if (!expected) {
           reject(
             new ExcelUserError("excel.headerMismatch", {
-              expected: expected.join(", "),
+              expected: expectedHeaders(registerType).join(", "),
               actual: header.join(", ")
             })
           );

@@ -19,6 +19,7 @@ import math
 import os
 import socket
 import sys
+import tempfile
 import traceback
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
@@ -334,10 +335,15 @@ def make_headers(register_type: str) -> List[str]:
     if register_type == "R":
         return ["type", "ID", "value"]
     if register_type == "P":
-        return ["Type", "ID", "X", "Y", "Z", "A", "B", "C", "TF", "UF", "Coord"]
+        prefix = ["Type", "ID", "PoseType"]
     if register_type == "PR":
-        return ["TYPE", "ID", "X", "Y", "Z", "A", "B", "C", "coord"]
-    raise ValueError("GBT_UNSUPPORTED_REGISTER_TYPE")
+        prefix = ["TYPE", "ID", "PoseType"]
+    if register_type not in ("P", "PR"):
+        raise ValueError("GBT_UNSUPPORTED_REGISTER_TYPE")
+    return (prefix + list("XYZABC") + [f"J{i}" for i in range(1, 10)]
+            + (["TF", "UF", "Coord"] if register_type == "P" else ["coord"])
+            + ["WristFlip", "ArmUpDown", "ArmBackFront"]
+            + [f"Turn{i}" for i in range(1, 10)] + ["Name", "Comment"])
 
 
 # P 寄存器（程序位姿）服务的 HTTP 端口，与 R/PR 所用端口不同。
@@ -384,17 +390,33 @@ def validate_rows(reg_type, rows, policy):
             raise ValueError("Duplicate ID")
         seen.add(idx)
         item["ID"] = idx
-        for key in (["value"] if reg_type == "R" else ["X", "Y", "Z", "A", "B", "C"]):
+        kind = row_pose_type(row) if reg_type != "R" else ""
+        keys = (["value"] if reg_type == "R" else
+                ([f"J{i}" for i in range(1, 10)] if kind == "JOINT" else list("XYZABC")))
+        for key in keys:
             value = row.get(key)
             if value is None or isinstance(value, bool) or (isinstance(value, str) and not value.strip()):
                 raise ValueError("Missing numeric value")
-            item[key] = round3(value)
+            item[key] = round3(value) if reg_type == "R" else finite_pose_number(value)
         if reg_type != "R":
             key = "Coord" if reg_type == "P" else "coord"
             coord = str(row.get(key, row.get(key + "（L/R）", ""))).strip().upper()
-            if coord not in ("L", "R"):
+            if coord not in (("L", "R", "U") if "PoseType" in row else ("L", "R")):
                 raise ValueError("Invalid L/R posture")
             item[key] = coord
+            if "PoseType" in row:
+                item["PoseType"] = kind
+                inactive = list("XYZABC") if kind == "JOINT" else [f"J{i}" for i in range(1, 10)]
+                if any(row.get(k) is not None and str(row[k]).strip() for k in inactive):
+                    raise ValueError("Inactive coordinates must be blank")
+                for key in ("WristFlip", "ArmUpDown", "ArmBackFront"):
+                    item[key] = valid_integer(row.get(key), -1, 1)
+                for i in range(1, 10):
+                    item[f"Turn{i}"] = valid_integer(row.get(f"Turn{i}"), -2147483648, 2147483647)
+                for key in ("Name", "Comment"):
+                    if row.get(key) is not None and not isinstance(row[key], str):
+                        raise ValueError("Invalid point text")
+                    item[key] = row.get(key) or ""
         if reg_type == "P":
             for key in ("TF", "UF"):
                 item[key] = valid_integer(row.get(key))
@@ -543,8 +565,94 @@ def read_r(arm, indexes: List[int], progress: Optional[ProgressCallback] = None)
     return rows
 
 
+def ensure_supported_pose(data: Any) -> None:
+    if getattr(data, "pt", None) not in (PoseType.CART, PoseType.JOINT):
+        gbt_raise("GBT_UNSUPPORTED_POSE_TYPE")
+
+
+def finite_pose_number(value: Any) -> float:
+    if value is None or isinstance(value, bool) or (isinstance(value, str) and not value.strip()):
+        raise ValueError("Missing pose value")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Non-finite pose value")
+    return number
+
+
+def row_pose_type(row: Dict[str, Any]) -> str:
+    # 仅真正缺少列的旧表格默认 CART，新格式的空类型不作猜测。
+    kind = str(row.get("PoseType", "CART")).strip().upper()
+    if kind not in ("CART", "JOINT"):
+        raise ValueError("Unknown pose type")
+    return kind
+
+
+def pose_to_row(pose: Any, reg_type: str, idx: int) -> Dict[str, Any]:
+    data = pose.poseData if reg_type == "P" else pose.poseRegisterData
+    ensure_supported_pose(data)
+    cart = data.cartData.baseCart if reg_type == "P" else data.cartData
+    kind = "JOINT" if data.pt == PoseType.JOINT else "CART"
+    row = {key: None for key in make_headers(reg_type)}
+    row.update({"Type" if reg_type == "P" else "TYPE": reg_type, "ID": idx, "PoseType": kind,
+                "Name": pose.name, "Comment": pose.comment})
+    if kind == "JOINT":
+        for i in range(1, 10):
+            row[f"J{i}"] = finite_pose_number(getattr(data.joint, f"j{i}"))
+    else:
+        for key in "XYZABC":
+            row[key] = finite_pose_number(getattr(cart.position, key.lower()))
+    posture = cart.posture
+    lr = valid_integer(posture.arm_left_right, -1, 1)
+    row["Coord" if reg_type == "P" else "coord"] = {-1: "L", 0: "U", 1: "R"}[lr]
+    for key, attr in (("WristFlip", "wrist_flip"), ("ArmUpDown", "arm_up_down"), ("ArmBackFront", "arm_back_front")):
+        row[key] = valid_integer(getattr(posture, attr), -1, 1)
+    if len(posture.turn_cycle) != 9:
+        raise ValueError("Invalid turn cycle length")
+    for i, value in enumerate(posture.turn_cycle, 1):
+        row[f"Turn{i}"] = valid_integer(value, -2147483648, 2147483647)
+    if reg_type == "P":
+        row.update(TF=valid_integer(data.cartData.tf), UF=valid_integer(data.cartData.uf))
+    return row
+
+
+def apply_pose_row(pose: Any, row: Dict[str, Any], reg_type: str) -> None:
+    # 显式设置目标类型；这是写入用户指定的点数据，不进行运动学坐标转换。
+    data = pose.poseData if reg_type == "P" else pose.poseRegisterData
+    cart = data.cartData.baseCart if reg_type == "P" else data.cartData
+    kind = row_pose_type(row)
+    data.pt = PoseType.JOINT if kind == "JOINT" else PoseType.CART
+    if kind == "JOINT":
+        for i in range(1, 10):
+            setattr(data.joint, f"j{i}", finite_pose_number(row[f"J{i}"]))
+    else:
+        for key in "XYZABC":
+            setattr(cart.position, key.lower(), finite_pose_number(row[key]))
+    if cart.posture is None:
+        cart.posture = Posture()
+    coord_key = "Coord" if reg_type == "P" else "coord"
+    coord = str(row.get(coord_key, row.get(coord_key + "（L/R）", "R"))).strip().upper()
+    cart.posture.arm_left_right = {"L": -1, "U": 0, "R": 1}[coord]
+    if "PoseType" in row:
+        for key, attr in (("WristFlip", "wrist_flip"), ("ArmUpDown", "arm_up_down"), ("ArmBackFront", "arm_back_front")):
+            setattr(cart.posture, attr, int(row[key]))
+        cart.posture.turn_cycle = [int(row[f"Turn{i}"]) for i in range(1, 10)]
+        pose.name, pose.comment = row.get("Name") or "", row.get("Comment") or ""
+    if reg_type == "P":
+        data.cartData.tf, data.cartData.uf = int(row["TF"]), int(row["UF"])
+
+
+def checked_pose_row(pose: Any, reg_type: str, idx: int) -> Dict[str, Any]:
+    try:
+        return pose_to_row(pose, reg_type, idx)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        log_py(f"malformed {reg_type} id={idx}: {exc!r}")
+        gbt_raise("GBT_REGISTER_READ_FAILED")
+
+
 def read_pr(arm, indexes: List[int], progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
+    rows = []
     with redirect_sdk_stdout_to_stderr():
         for step, idx in enumerate(indexes, start=1):
             if progress:
@@ -556,30 +664,12 @@ def read_pr(arm, indexes: List[int], progress: Optional[ProgressCallback] = None
                 gbt_raise("GBT_REGISTER_READ_FAILED")
             ensure_read_status(ret)
             if ret == StatusCodeEnum.OK:
-                try:
-                    position = pose.poseRegisterData.cartData.position
-                    coord = _coord_from_pose_register(pose)
-                    rows.append(
-                        {
-                            "TYPE": "PR",
-                            "ID": idx,
-                            "X": round3(position.x),
-                            "Y": round3(position.y),
-                            "Z": round3(position.z),
-                            "A": round3(position.a),
-                            "B": round3(position.b),
-                            "C": round3(position.c),
-                            "coord": coord,
-                        }
-                    )
-                except Exception as exc:
-                    log_py(f"read_pr malformed id={idx} exc={exc!r}")
-                    gbt_raise("GBT_REGISTER_READ_FAILED")
+                rows.append(checked_pose_row(pose, "PR", idx))
     return rows
 
 
 def read_p(arm, program_name: str, indexes: List[int], progress: Optional[ProgressCallback] = None) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
+    rows = []
     with redirect_sdk_stdout_to_stderr():
         for step, idx in enumerate(indexes, start=1):
             if progress:
@@ -591,29 +681,7 @@ def read_p(arm, program_name: str, indexes: List[int], progress: Optional[Progre
                 gbt_raise("GBT_REGISTER_READ_FAILED")
             ensure_read_status(ret, program_pose=True)
             if ret == StatusCodeEnum.OK:
-                try:
-                    position = pose.poseData.cartData.baseCart.position
-                    tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
-                    uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
-                    coord = _coord_from_pose(pose)
-                    rows.append(
-                        {
-                            "Type": "P",
-                            "ID": idx,
-                            "X": round3(position.x),
-                            "Y": round3(position.y),
-                            "Z": round3(position.z),
-                            "A": round3(position.a),
-                            "B": round3(position.b),
-                            "C": round3(position.c),
-                            "TF": tf,
-                            "UF": uf,
-                            "Coord": coord,
-                        }
-                    )
-                except Exception as exc:
-                    log_py(f"read_p malformed program={program_name!r} id={idx} exc={exc!r}")
-                    gbt_raise("GBT_REGISTER_READ_FAILED")
+                rows.append(checked_pose_row(pose, "P", idx))
     return rows
 
 
@@ -661,43 +729,14 @@ def read_p_pose_map(
     return out
 
 
-def read_p_all_scan(
-    arm,
-    program_name: str,
-    progress: Optional[ProgressCallback] = None,
-    id_filter: Optional[Set[int]] = None,
-) -> List[Dict[str, Any]]:
-    """使用 read_all_poses 一次性获取程序中所有P点（SDK 4.4.3）。"""
+def read_p_all_scan(arm, program_name: str, progress: Optional[ProgressCallback] = None,
+                    id_filter: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
     pose_map = read_p_pose_map(arm, program_name, id_filter)
-    rows: List[Dict[str, Any]] = []
-    total = len(pose_map)
+    rows = []
     for step, idx in enumerate(sorted(pose_map), start=1):
-        pose = pose_map[idx]
-        try:
-            position = pose.poseData.cartData.baseCart.position
-            tf = _safe_int(getattr(pose.poseData.cartData, "tf", 0), 0)
-            uf = _safe_int(getattr(pose.poseData.cartData, "uf", 0), 0)
-            coord = _coord_from_pose(pose)
-            rows.append(
-                {
-                    "Type": "P",
-                    "ID": idx,
-                    "X": round3(position.x),
-                    "Y": round3(position.y),
-                    "Z": round3(position.z),
-                    "A": round3(position.a),
-                    "B": round3(position.b),
-                    "C": round3(position.c),
-                    "TF": tf,
-                    "UF": uf,
-                    "Coord": coord,
-                }
-            )
-        except Exception as exc:
-            log_py(f"read_p_all_scan malformed pose exc={exc!r}")
-            gbt_raise("GBT_REGISTER_READ_FAILED")
+        rows.append(checked_pose_row(pose_map[idx], "P", idx))
         if progress:
-            progress(step, total, len(rows))
+            progress(step, len(pose_map), len(rows))
     return rows
 
 
@@ -764,17 +803,16 @@ def write_r(arm, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
 def build_pose_register_from_row(row: Dict[str, Any]):
     pose_register = PoseRegister()
     pose_register.id = int(row["ID"])
-    pose_register.poseRegisterData.pt = PoseType.CART
-    pos = pose_register.poseRegisterData.cartData.position
-    pos.x = round3(row["X"])
-    pos.y = round3(row["Y"])
-    pos.z = round3(row["Z"])
-    pos.a = round3(row["A"])
-    pos.b = round3(row["B"])
-    pos.c = round3(row["C"])
-    coord_val = row.get("coord", row.get("coord（L/R）", "R"))
-    _apply_coord_to_pose_register(pose_register, str(coord_val))
+    apply_pose_row(pose_register, row, "PR")
     return pose_register
+
+
+def ensure_pr_metadata_write(arm: Any, row: Dict[str, Any], old: Any) -> None:
+    # SDK 新版 PR 数值接口不传名称/注释；不能把未发送的变更报为成功。
+    if getattr(arm.register, "use_new_api", False) is True and "PoseType" in row:
+        for column, attr in (("Name", "name"), ("Comment", "comment")):
+            if (row.get(column) or "") != (getattr(old, attr, "") or ""):
+                gbt_raise("GBT_POSE_METADATA_UNSUPPORTED")
 
 
 def write_pr(arm, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
@@ -785,17 +823,11 @@ def write_pr(arm, row: Dict[str, Any], policy: str) -> Tuple[bool, str]:
     exists = ret == StatusCodeEnum.OK
     if exists and policy == "skip":
         return True, "skip"
+    ensure_pr_metadata_write(arm, row, old if exists else None)
     if exists:
         pose_register = old
-        pos = pose_register.poseRegisterData.cartData.position
-        pos.x = round3(row["X"])
-        pos.y = round3(row["Y"])
-        pos.z = round3(row["Z"])
-        pos.a = round3(row["A"])
-        pos.b = round3(row["B"])
-        pos.c = round3(row["C"])
-        coord_val = row.get("coord", row.get("coord（L/R）", "R"))
-        _apply_coord_to_pose_register(pose_register, str(coord_val))
+        ensure_supported_pose(getattr(pose_register, "poseRegisterData", None))
+        apply_pose_row(pose_register, row, "PR")
     else:
         pose_register = build_pose_register_from_row(row)
     with redirect_sdk_stdout_to_stderr():
@@ -813,14 +845,16 @@ def write_p(arm, program_name: str, row: Dict[str, Any], policy: str) -> Tuple[b
     idx = int(row["ID"])
     try:
         pose_map = read_p_pose_map(arm, program_name, {idx}, strict=False)
-    except RuntimeError as exc:
-        return False, str(exc)
+    except Exception as exc:
+        log_py(f"P read before write failed id={idx}: {exc!r}")
+        return False, "GBT_PROGRAM_NOT_FOUND" if str(exc) == "GBT_PROGRAM_NOT_FOUND" else "GBT_P_READ_FAILED"
     pose = pose_map.get(idx)
     exists = pose is not None
     if exists and policy == "skip":
         return True, "skip"
     if exists:
         target_pose = pose
+        ensure_supported_pose(getattr(target_pose, "poseData", None))
     else:
         if not hasattr(arm.program_pose, "add"):
             return False, "当前 SDK 不支持 program_pose.add，无法新增程序点。"
@@ -828,25 +862,8 @@ def write_p(arm, program_name: str, row: Dict[str, Any], policy: str) -> Tuple[b
             return False, "未找到 ProgramPose 类型，无法新增程序点。"
         target_pose = ProgramPose()
         target_pose.id = idx
-        target_pose.poseData.pt = PoseType.CART
 
-    pos = target_pose.poseData.cartData.baseCart.position
-    pos.x = round3(row["X"])
-    pos.y = round3(row["Y"])
-    pos.z = round3(row["Z"])
-    pos.a = round3(row["A"])
-    pos.b = round3(row["B"])
-    pos.c = round3(row["C"])
-    tf_val = row.get("TF")
-    uf_val = row.get("UF")
-    target_pose.poseData.cartData.tf = _safe_int(
-        tf_val, _safe_int(getattr(target_pose.poseData.cartData, "tf", 0), 0)
-    )
-    target_pose.poseData.cartData.uf = _safe_int(
-        uf_val, _safe_int(getattr(target_pose.poseData.cartData, "uf", 0), 0)
-    )
-    coord_val = row.get("Coord", row.get("Coord（L/R）", "R"))
-    _apply_coord_to_pose(target_pose, str(coord_val))
+    apply_pose_row(target_pose, row, "P")
 
     try:
         with redirect_sdk_stdout_to_stderr():
@@ -855,14 +872,12 @@ def write_p(arm, program_name: str, row: Dict[str, Any], policy: str) -> Tuple[b
             else:
                 ret = unwrap_status(arm.program_pose.add(program_name, idx, target_pose))
     except Exception as exc:
-        exc_str = str(exc)
-        if "10061" in exc_str or "HTTPConnectionPool" in exc_str or "Connection refused" in exc_str.lower():
-            return False, (
-                f"P寄存器服务（端口{P_SERVICE_PORT}）连接中断，写入失败。"
-                f"请检查机器人控制器网络状态。"
-            )
-        return False, f"写入P点异常: {exc_str[:200]}"
+        log_py(f"P write result unknown id={idx}: {exc!r}")
+        return False, "GBT_P_WRITE_UNKNOWN"
     if ret != StatusCodeEnum.OK:
+        if getattr(ret, "name", "") in ("CONNECTION_TIMEOUT", "WRITE_PROGRAM_POSE_FAILED"):
+            log_py(f"P write result unknown id={idx}: {status_text(ret)}")
+            return False, "GBT_P_WRITE_UNKNOWN"
         return False, status_text(ret)
     return True, "write"
 
@@ -891,7 +906,22 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
     success = 0
     skipped = 0
     failed: List[str] = []
+    point_failures: List[Dict[str, Any]] = []
     try:
+        # 在第一笔覆盖前校验整批既有点，避免后面的未知类型导致部分写入。
+        if reg_type == "PR":
+            for row in rows:
+                with redirect_sdk_stdout_to_stderr():
+                    pose, ret = arm.register.read_PR(int(row["ID"]))
+                ensure_read_status(ret)
+                if policy == "overwrite" or ret != StatusCodeEnum.OK:
+                    ensure_pr_metadata_write(arm, row, pose if ret == StatusCodeEnum.OK else None)
+                if ret == StatusCodeEnum.OK and policy == "overwrite":
+                    ensure_supported_pose(getattr(pose, "poseRegisterData", None))
+        elif policy == "overwrite" and reg_type == "P":
+            poses = read_p_pose_map(arm, program_name, {int(row["ID"]) for row in rows})
+            for pose in poses.values():
+                ensure_supported_pose(getattr(pose, "poseData", None))
         total = len(rows)
         for pos, row in enumerate(rows, start=1):
             # 在写入当前寄存器之前先上报进度：current=正在写入的序号，matched=此前已完成的条数。
@@ -910,7 +940,9 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
                 # 停止后续写入；当前项结果可能未知，保留此前已确认的计数。
                 log_py(f"apply_rows interrupted: {exc!r}")
                 return {"ok": False, "code": "GBT_WRITE_INTERRUPTED",
-                        "stats": {"success": success, "skipped": skipped, "failed": len(failed) + 1},
+                        "stats": {"success": success, "skipped": skipped, "failed": len(failed) + 1,
+                                  **({"failures": point_failures + [{"id": row["ID"], "outcome": "unknown", "reason": "GBT_P_WRITE_UNKNOWN"}],
+                                      "notAttempted": total - pos} if reg_type == "P" else {})},
                         "details": failed + [f"ID={row.get('ID')}: result unknown; not attempted={total - pos}"]}
 
             if ok and tag == "skip":
@@ -919,6 +951,8 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
                 success += 1
             else:
                 failed.append(f"ID={row.get('ID')}: {tag}")
+                if reg_type == "P":
+                    point_failures.append({"id": row["ID"], "outcome": "unknown" if tag == "GBT_P_WRITE_UNKNOWN" else "failed", "reason": tag})
     finally:
         _safe_disconnect(arm)
         log_py("apply_rows disconnected")
@@ -933,14 +967,15 @@ def apply_rows(conn: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "ok": False,
                 "code": "GBT_PROGRAM_NOT_FOUND",
-                "details": [],
+                "details": failed,
+                "stats": {"success": success, "skipped": skipped, "failed": len(failed), "failures": point_failures},
             }
         log_py(
             f"apply_rows end partial_fail success={success} skipped={skipped} failed={len(failed)}"
         )
         return {
             "ok": False,
-            "stats": {"success": success, "skipped": skipped, "failed": len(failed)},
+            "stats": {"success": success, "skipped": skipped, "failed": len(failed), **({"failures": point_failures} if reg_type == "P" else {})},
             "details": failed,
         }
     log_py(f"apply_rows end ok success={success} skipped={skipped}")
@@ -961,6 +996,18 @@ def _cell_for_export(row: Dict[str, Any], key: str, reg_type: str) -> Any:
     return row.get(key, "")
 
 
+def append_excel_record(ws: Any, record: List[Any]) -> None:
+    # 名称/注释可能以等号开头，必须作为文字保存，不能变成 Excel 公式。
+    from openpyxl.cell import WriteOnlyCell
+    cells = []
+    for value in record:
+        cell = WriteOnlyCell(ws, value=value)
+        if isinstance(value, str):
+            cell.data_type = "s"
+        cells.append(cell)
+    ws.append(cells)
+
+
 def export_excel(register_type: str, rows: List[Dict[str, Any]], output_path: str) -> Dict[str, Any]:
     if Workbook is None:
         if _OPENPYXL_ERR is not None:
@@ -968,6 +1015,12 @@ def export_excel(register_type: str, rows: List[Dict[str, Any]], output_path: st
         gbt_raise("GBT_OPENPYXL_MISSING")
     log_py(f"export_excel begin type={register_type!r} rows={len(rows)} path_len={len(output_path)}")
     headers = make_headers(register_type)
+    if register_type != "R" and rows and any("PoseType" not in row for row in rows):
+        if any("PoseType" in row for row in rows):
+            gbt_raise("GBT_INVALID_REGISTER_DATA")
+        # 旧表格缺少姿态信息，原样导出旧格式，不能补默认值改变下次覆盖的语义。
+        headers = (["Type", "ID"] + list("XYZABC") + ["TF", "UF", "Coord"] if register_type == "P"
+                   else ["TYPE", "ID"] + list("XYZABC") + ["coord"])
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -979,18 +1032,28 @@ def export_excel(register_type: str, rows: List[Dict[str, Any]], output_path: st
         ws.append(headers)
         for row in rows:
             record = [_cell_for_export(row, key, register_type) for key in headers]
-            record = [round3(v) if isinstance(v, (int, float)) else v for v in record]
-            ws.append(record)
+            record = [round3(v) if register_type == "R" and isinstance(v, (int, float)) else v for v in record]
+            append_excel_record(ws, record)
     else:
         ws = wb.active
         ws.title = register_type
         ws.append(headers)
         for row in rows:
             record = [_cell_for_export(row, key, register_type) for key in headers]
-            record = [round3(v) if isinstance(v, (int, float)) else v for v in record]
-            ws.append(record)
+            record = [round3(v) if register_type == "R" and isinstance(v, (int, float)) else v for v in record]
+            append_excel_record(ws, record)
 
-    wb.save(output_file)
+    # 同目录临时文件确保同卷替换；任何生成或替换失败均保留原备份。
+    try:
+        with tempfile.TemporaryDirectory(prefix=".gbt-excel-", dir=output_file.parent) as staging:
+            staged_file = Path(staging) / "export.xlsx"
+            with staged_file.open("w+b") as saved:
+                wb.save(saved)
+                saved.flush()
+                os.fsync(saved.fileno())
+            os.replace(staged_file, output_file)
+    finally:
+        wb.close()
     log_py(f"export_excel ok path={output_file} write_only={use_write_only}")
     return {"ok": True, "code": "export_saved"}
 
@@ -1017,19 +1080,7 @@ def fetch_robot_meta(conn: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def export_template(register_type: str, output_path: str) -> Dict[str, Any]:
-    if Workbook is None:
-        if _OPENPYXL_ERR is not None:
-            log_py(f"openpyxl missing: {_OPENPYXL_ERR!r}")
-        gbt_raise("GBT_OPENPYXL_MISSING")
-    log_py(f"export_template begin type={register_type!r} path_len={len(output_path)}")
-    wb = Workbook()
-    ws = wb.active
-    ws.title = register_type
-    ws.append(make_headers(register_type))
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(output_file)
-    log_py(f"export_template ok path={output_file}")
+    export_excel(register_type, [], output_path)
     return {"ok": True, "code": "template_saved"}
 
 
@@ -1042,7 +1093,7 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
         import controller_discovery
         if action == "check_discovery":
             return controller_discovery.check()
-        controller_discovery.scan(payload.get("interfaceIds"), emit_frame)
+        controller_discovery.scan(emit_frame)
         return {"ok": True}
     if action == "read_preview":
         return read_preview(_extract_connect_params(payload), payload["request"])

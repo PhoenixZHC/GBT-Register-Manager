@@ -2,17 +2,19 @@
 import ast
 import contextlib
 import math
+import os
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import typing
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class RegisterSafetyTests(unittest.TestCase):
     def setUp(self):
         tree = ast.parse((Path(__file__).parents[1] / "bridge.py").read_text(encoding="utf-8-sig"))
-        self.ns = dict(vars(typing), math=math, StatusCodeEnum=SimpleNamespace(OK=0, NOT_FOUND=-28, PROGRAM_POSE_NOT_FOUND=-10, PROGRAM_NOT_FOUND=-11),
+        self.ns = dict(vars(typing), math=math, os=os, tempfile=tempfile, StatusCodeEnum=SimpleNamespace(OK=0, NOT_FOUND=-28, PROGRAM_POSE_NOT_FOUND=-10, PROGRAM_NOT_FOUND=-11),
                        log_py=lambda *a: None, emit_progress=lambda *a: None,
                        READ_ALL_FIRST_ID=1, READ_ALL_CONSECUTIVE_FAIL_LIMIT=10, READ_ALL_MAX_ID=100000,
                        redirect_sdk_stdout_to_stderr=contextlib.nullcontext, ProgressCallback=typing.Callable)
@@ -176,6 +178,170 @@ class RegisterSafetyTests(unittest.TestCase):
         for first, last in ((-1, 10), (1.5, 10), (1, 10001), (10, 1)):
             with self.assertRaisesRegex(RuntimeError, "GBT_INVALID_REGISTER_DATA"):
                 self.ns["build_indexes"]({"startId": first, "endId": last})
+
+    def pose_fixture(self, joint=False):
+        from Agilebot.IR.A.sdk_classes import ProgramPose, PoseRegister, Posture
+        from Agilebot.IR.A.sdk_types import PoseType
+        self.ns.update(PoseType=PoseType, ProgramPose=ProgramPose, PoseRegister=PoseRegister, Posture=Posture)
+        p, pr = ProgramPose(), PoseRegister()
+        p.id = pr.id = 1
+        p.poseData.pt = pr.poseRegisterData.pt = PoseType.JOINT if joint else PoseType.CART
+        p.poseData.joint.j1 = pr.poseRegisterData.joint.j1 = 45
+        self.arm.program_pose = SimpleNamespace(read=MagicMock(return_value=(p, 0)),
+            read_all_poses=MagicMock(return_value=([p], 0)), write=MagicMock(return_value=0), add=MagicMock(return_value=0))
+        self.reg.read_PR.return_value = (pr, 0)
+        self.ns['_check_p_service'] = lambda *a: None
+        row = dict(ID=1, X=123, Y=0, Z=0, A=0, B=0, C=0, TF=0, UF=0, Coord='R', coord='R')
+        return p, pr, row
+
+    def test_joint_points_read_in_all_read_paths(self):
+        self.pose_fixture(joint=True)
+        for name, args in [('read_pr', (self.arm, [1])), ('read_p', (self.arm, 'test', [1])),
+                           ('read_p_all_scan', (self.arm, 'test'))]:
+            with self.subTest(path=name):
+                row = self.ns[name](*args)[0]
+                self.assertEqual(row['PoseType'], 'JOINT')
+                self.assertEqual(row['J1'], 45)
+                self.assertIsNone(row['X'])
+
+    def test_legacy_cartesian_overwrite_changes_joint_type(self):
+        p, pr, row = self.pose_fixture(joint=True)
+        for name, args in [('write_pr', (self.arm, row, 'overwrite')),
+                           ('write_p', (self.arm, 'test', row, 'overwrite'))]:
+            with self.subTest(path=name):
+                self.assertEqual(self.ns[name](*args), (True, 'write'))
+        self.assertEqual(p.poseData.pt, self.ns['PoseType'].CART)
+        self.assertEqual(pr.poseRegisterData.pt, self.ns['PoseType'].CART)
+        self.assertEqual(p.poseData.cartData.baseCart.position.x, 123)
+        self.assertEqual(pr.poseRegisterData.cartData.position.x, 123)
+
+    def test_later_unknown_point_blocks_entire_overwrite_batch(self):
+        p, pr, row = self.pose_fixture(joint=True)
+        p.id = pr.id = 2
+        p.poseData.pt = pr.poseRegisterData.pt = 999
+        self.reg.read_PR.side_effect = lambda idx: (None, -28) if idx == 1 else (pr, 0)
+        for kind in ('P', 'PR'):
+            with self.subTest(kind=kind), self.assertRaisesRegex(RuntimeError, 'GBT_UNSUPPORTED_POSE_TYPE'):
+                self.ns['apply_rows']({'controller_ip':'isolated'}, dict(registerType=kind, programName='test',
+                    conflictPolicy='overwrite', rows=[row, dict(row, ID=2)]))
+        self.reg.write_PR.assert_not_called()
+        self.arm.program_pose.add.assert_not_called()
+        self.arm.program_pose.write.assert_not_called()
+
+    def test_cartesian_read_write_still_works(self):
+        p, pr, row = self.pose_fixture()
+        self.assertEqual(self.ns['write_pr'](self.arm, row, 'overwrite'), (True, 'write'))
+        self.assertEqual(self.ns['write_p'](self.arm, 'test', row, 'overwrite'), (True, 'write'))
+        self.assertEqual(self.ns['read_pr'](self.arm, [1])[0]['X'], 123)
+        self.assertEqual(self.ns['read_p_all_scan'](self.arm, 'test')[0]['X'], 123)
+
+    def test_unknown_pose_type_is_rejected(self):
+        self.pose_fixture()
+        for data in (None, SimpleNamespace(), SimpleNamespace(pt=999)):
+            with self.assertRaisesRegex(RuntimeError, 'GBT_UNSUPPORTED_POSE_TYPE'):
+                self.ns['ensure_supported_pose'](data)
+
+    def test_excel_generation_failure_preserves_existing_backup(self):
+        from openpyxl import Workbook
+        self.ns.update(Workbook=Workbook, Path=Path)
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'backup.xlsx'
+            target.write_bytes(b'original backup')
+            def fail_save(wb, stream):
+                stream.write(b'partial new archive')
+                raise OSError('disk full')
+            with patch.object(Workbook, 'save', fail_save), self.assertRaises(OSError):
+                self.ns['export_excel']('R', [], str(target))
+            self.assertEqual(target.read_bytes(), b'original backup')
+            self.assertEqual(list(Path(folder).iterdir()), [target])
+
+    def test_excel_replace_failure_preserves_existing_backup(self):
+        from openpyxl import Workbook
+        self.ns.update(Workbook=Workbook, Path=Path)
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'backup.xlsx'
+            target.write_bytes(b'original backup')
+            with patch.object(os, 'replace', side_effect=PermissionError('file in use')), self.assertRaises(PermissionError):
+                self.ns['export_excel']('R', [], str(target))
+            self.assertEqual(target.read_bytes(), b'original backup')
+            self.assertEqual(list(Path(folder).iterdir()), [target])
+
+    def test_excel_success_replaces_backup_with_readable_workbook(self):
+        from openpyxl import Workbook, load_workbook
+        self.ns.update(Workbook=Workbook, Path=Path)
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'backup.xlsx'
+            target.write_bytes(b'original backup')
+            self.ns['export_excel']('R', [dict(type='R', ID=1, value=42)], str(target))
+            wb = load_workbook(target)
+            try:
+                self.assertEqual(list(wb.active.values), [('type', 'ID', 'value'), ('R', 1, 42)])
+            finally:
+                wb.close()
+
+    def test_template_uses_protected_export(self):
+        self.ns['export_excel'] = MagicMock(side_effect=OSError('save failed'))
+        with self.assertRaises(OSError):
+            self.ns['export_template']('PR', 'unused.xlsx')
+        self.ns['export_excel'].assert_called_once_with('PR', [], 'unused.xlsx')
+
+    def p_batch_fixture(self):
+        import copy
+        pose, _, row = self.pose_fixture()
+        poses = [copy.deepcopy(pose) for _ in range(3)]
+        for idx, item in enumerate(poses, 1):
+            item.id = idx
+        self.arm.program_pose.read_all_poses.return_value = (poses, 0)
+        request = dict(registerType='P', programName='test', conflictPolicy='overwrite',
+                       rows=[dict(row, ID=i) for i in range(1, 4)])
+        return poses, request
+
+    def test_p_timeout_continues_with_exact_failed_id_and_unknown_result(self):
+        _, request = self.p_batch_fixture()
+        self.arm.program_pose.write.side_effect = [0, TimeoutError('response lost'), 0]
+        result = self.ns['apply_rows']({'controller_ip':'isolated'}, request)
+        self.assertFalse(result['ok'])
+        self.assertEqual([c.args[1] for c in self.arm.program_pose.write.call_args_list], [1, 2, 3])
+        self.assertEqual(result['stats'], dict(success=2, skipped=0, failed=1,
+            failures=[dict(id=2, outcome='unknown', reason='GBT_P_WRITE_UNKNOWN')]))
+        self.assertIn('ID=2', result['details'][0])
+
+    def test_p_read_failure_continues_without_writing_that_point(self):
+        poses, request = self.p_batch_fixture()
+        self.arm.program_pose.read_all_poses.side_effect = [(poses, 0), (poses, 0), OSError('connection lost'), (poses, 0)]
+        result = self.ns['apply_rows']({'controller_ip':'isolated'}, request)
+        self.assertEqual([c.args[1] for c in self.arm.program_pose.write.call_args_list], [1, 3])
+        self.assertEqual(result['stats']['success'], 2)
+        self.assertEqual(result['stats']['failures'], [dict(id=2, outcome='failed', reason='GBT_P_READ_FAILED')])
+
+    def test_p_all_failed_records_every_id_without_retry(self):
+        _, request = self.p_batch_fixture()
+        self.arm.program_pose.write.side_effect = TimeoutError('response lost')
+        result = self.ns['apply_rows']({'controller_ip':'isolated'}, request)
+        self.assertEqual(result['stats']['success'], 0)
+        self.assertEqual(result['stats']['failed'], 3)
+        self.assertEqual([item['id'] for item in result['stats']['failures']], [1, 2, 3])
+        self.assertEqual(self.arm.program_pose.write.call_count, 3)
+
+    def test_p_success_skip_and_business_failure_counts(self):
+        _, request = self.p_batch_fixture()
+        self.arm.program_pose.write.side_effect = [0, 99, 0]
+        result = self.ns['apply_rows']({'controller_ip':'isolated'}, request)
+        self.assertEqual(result['stats']['failures'][0]['outcome'], 'failed')
+        self.assertEqual(result['stats']['success'], 2)
+        self.arm.program_pose.write.reset_mock(side_effect=True)
+        request['conflictPolicy'] = 'skip'
+        result = self.ns['apply_rows']({'controller_ip':'isolated'}, request)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['stats'], dict(success=0, skipped=3, failed=0))
+        self.arm.program_pose.write.assert_not_called()
+
+    def test_p_sdk_timeout_status_is_unconfirmed_and_continues(self):
+        _, request = self.p_batch_fixture()
+        self.arm.program_pose.write.side_effect = [SimpleNamespace(name='CONNECTION_TIMEOUT'), 0, 0]
+        result = self.ns['apply_rows']({'controller_ip':'isolated'}, request)
+        self.assertEqual(result['stats']['success'], 2)
+        self.assertEqual(result['stats']['failures'][0]['outcome'], 'unknown')
 
 
 if __name__ == "__main__":

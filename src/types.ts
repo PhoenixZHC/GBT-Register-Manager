@@ -9,10 +9,12 @@ export interface DiscoveryCheck {
 }
 export interface DiscoveredController {
   ip: string; mac: string; interfaceIds: string[]; mask?: string; gateway?: string;
+  key: string; macStatus: "valid" | "missing" | "invalid"; connectable: boolean;
 }
 export interface DiscoveryEvent {
   scanId: string;
-  kind: "device" | "warning" | "finished" | "error";
+  kind: "device" | "warning" | "finished" | "error" | "interfaces";
+  interfaces?: DiscoveryInterface[];
   device?: DiscoveredController;
   code?: string;
   interfaceId?: string;
@@ -109,6 +111,8 @@ export interface CommonResponse {
     success: number;
     skipped: number;
     failed: number;
+    failures?: { id: number; outcome: "failed" | "unknown"; reason: string }[];
+    notAttempted?: number;
   };
 }
 

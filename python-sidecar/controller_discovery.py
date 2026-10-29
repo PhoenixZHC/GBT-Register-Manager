@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from collections import Counter
 import ipaddress
 import json
 import os
@@ -17,10 +18,16 @@ RESPONSE_TYPE = 0xEEEB
 SOURCE = "send_broadcast.go"
 MAX_PAYLOAD = 8192
 MAX_RESULTS = 1024
+SCAN_DURATION = 120.0
+SEND_SLOTS = (0, 2, 4, *range(14, 115, 10))
+
+
+def diagnostic(event, **fields):
+    print("[discovery] " + json.dumps({"event": event, **fields}, ensure_ascii=True), file=sys.stderr, flush=True)
 
 
 def request_payload(request_id):
-    return json.dumps({"id": request_id, "src": SOURCE, "cmd": "get_controller_ips", "param": ""}).encode("utf-8")
+    return json.dumps({"id": request_id, "src": SOURCE, "cmd": "get_controller_ips", "param": ""}, separators=(",", ":")).encode("utf-8")
 
 
 def normalize_mac(value):
@@ -34,28 +41,39 @@ def normalize_mac(value):
     return mac
 
 
-def parse_response(payload, request_id):
-    if not payload or len(payload) > MAX_PAYLOAD:
+def parse_response(payload, request_id, counters=None):
+    def reject(reason):
+        if counters is not None:
+            counters[reason] += 1
         return []
+    if not payload or len(payload) > MAX_PAYLOAD:
+        return reject("payload_size")
     try:
         # 只允许帧末尾的零填充，不截取任意 JSON 子串。
         msg = json.loads(payload.rstrip(b"\x00").decode("utf-8"))
-        if not isinstance(msg, dict) or msg.get("id") != request_id or msg.get("dest") != SOURCE:
-            return []
+        if not isinstance(msg, dict):
+            return reject("invalid_shape")
+        if msg.get("id") != request_id or msg.get("dest") != SOURCE:
+            return reject("request_mismatch")
         data = msg.get("data")
         if not isinstance(data, dict) or data.get("code") != 1000:
-            return []
+            return reject("response_code")
         result = data.get("res")
         if not isinstance(result, dict) or not isinstance(result.get("ip"), str):
-            return []
-        mac = normalize_mac(result.get("mac"))
-        if not mac:
-            return []
+            return reject("invalid_shape")
+        raw_mac = result.get("mac")
+        mac = normalize_mac(raw_mac) or ""
+        mac_status = "valid" if mac else ("missing" if raw_mac is None or raw_mac == "" else "invalid")
+        if not mac and counters is not None:
+            counters["mac_" + mac_status] += 1
         rows = []
         seen = set()
         for item in result["ip"].splitlines():
             try:
-                addr = ipaddress.IPv4Address(item.strip())
+                addr = ipaddress.ip_address(item.strip())
+                # 原版 net.ParseIP 将 IPv4-mapped IPv6 输出为 IPv4。
+                if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+                    addr = addr.ipv4_mapped
             except ValueError:
                 continue
             if addr.is_unspecified or addr.is_multicast or addr.is_loopback or str(addr) == "255.255.255.255":
@@ -63,16 +81,16 @@ def parse_response(payload, request_id):
             if str(addr) in seen:
                 continue
             seen.add(str(addr))
-            row = {"ip": str(addr), "mac": mac}
+            row = {"ip": str(addr), "mac": mac, "macStatus": mac_status, "connectable": addr.version == 4}
             for key in ("mask", "gateway"):
                 try:
                     row[key] = str(ipaddress.IPv4Address(result.get(key, "")))
                 except (ValueError, TypeError):
                     pass
             rows.append(row)
-        return rows
+        return rows if rows else reject("no_valid_ip")
     except (ValueError, TypeError, UnicodeError, RecursionError):
-        return []
+        return reject("invalid_json")
 
 
 class Results:
@@ -80,11 +98,11 @@ class Results:
         self.rows = {}
 
     def add(self, row, interface_id):
-        key = (row["mac"], row["ip"])
+        key = (row["mac"], row["ip"], "" if row["mac"] else interface_id)
         if key not in self.rows:
             if len(self.rows) >= MAX_RESULTS:
                 raise RuntimeError("result_limit")
-            self.rows[key] = dict(row, interfaceIds=[])
+            self.rows[key] = dict(row, key=json.dumps(key, separators=(",", ":")), interfaceIds=[])
         current = self.rows[key]
         if interface_id in current["interfaceIds"]:
             return None
@@ -171,16 +189,40 @@ def load_backend():
     return conf, Ether, Raw
 
 
+def fallback_mac(iface, adapters):
+    """优先 GUID，次选唯一 IP 交集；不猜测、不借用另一张网卡的 MAC。"""
+    name = str(iface.network_name).lower()
+    exact = [a for a in adapters if a.get("guid") and name.endswith(str(a["guid"]).lower())]
+    ips = getattr(iface, "ips", {})
+    ips = {ip for values in ips.values() for ip in values} if isinstance(ips, dict) else set(ips)
+    candidates = exact or [a for a in adapters if ips.intersection(a.get("ips", []))]
+    if len(candidates) == 1:
+        return normalize_mac(candidates[0].get("mac"))
+    return None
+
+
 def interfaces(conf):
     found = {}
+    adapters = None
     for iface in conf.ifaces.values():
         flags = int(getattr(iface, "flags", 0))
         mac = normalize_mac(getattr(iface, "mac", None))
         # PCAP_IF_LOOPBACK=1，PCAP_IF_UP=2；旧版驱动 flags=0 时由打开接口验证。
-        if not mac or flags & 1 or (flags and not flags & 2):
+        if flags & 1 or (flags and not flags & 2):
+            diagnostic("interface_skipped", interfaceId=str(iface.network_name), flags=flags)
             continue
         name = str(iface.network_name)
-        found[name] = {"id": name, "name": str(iface.description or iface.name), "mac": mac}
+        if not mac:
+            if adapters is None:
+                try:
+                    from scapy.arch.windows import get_windows_if_list
+                    adapters = get_windows_if_list()
+                except Exception as exc:
+                    diagnostic("mac_lookup_failed", code=error_status(exc))
+                    adapters = []
+            mac = fallback_mac(iface, adapters)
+        found[name] = {"id": name, "name": str(iface.description or iface.name), "mac": mac or ""}
+        diagnostic("interface", **found[name], flags=flags)
     return list(found.values())
 
 
@@ -214,12 +256,16 @@ def receive_packet(sock, ether):
 
 def check():
     status = driver_status()
+    diagnostic("driver_check", status=status)
     result = {"status": status, "interfaces": [], "warnings": []}
     if status != "ready":
         return result
     try:
         conf, _, _ = load_backend()
         for iface in interfaces(conf):
+            if not iface["mac"]:
+                result["warnings"].append({"code": "missing_mac", "interfaceId": iface["id"], "name": iface["name"]})
+                continue
             try:
                 sock = open_socket(conf, iface)
                 sock.close()
@@ -234,22 +280,26 @@ def check():
     return result
 
 
-def scan(interface_ids, emit, duration=10.0, clock=time.monotonic, sleep=time.sleep):
+def scan(emit, duration=SCAN_DURATION, clock=time.monotonic, sleep=time.sleep):
     status = driver_status()
+    diagnostic("scan_driver", status=status)
     if status != "ready":
         emit({"kind": "error", "code": status})
         return
     sockets = {}
+    statistics = {}
     try:
         conf, Ether, Raw = load_backend()
         available = {item["id"]: item for item in interfaces(conf)}
-        if not isinstance(interface_ids, list) or not interface_ids or len(interface_ids) > 64 or any(not isinstance(i, str) for i in interface_ids):
-            emit({"kind": "error", "code": "invalid_request"})
-            return
-        for interface_id in dict.fromkeys(interface_ids):
+        emit({"kind": "interfaces", "interfaces": list(available.values())})
+        for interface_id, iface in available.items():
+            if not iface["mac"]:
+                emit({"kind": "warning", "code": "missing_mac", "interfaceId": interface_id})
+                continue
             try:
-                iface = available[interface_id]
                 sockets[interface_id] = (open_socket(conf, iface), iface)
+                statistics[interface_id] = Counter()
+                diagnostic("opened", interfaceId=interface_id)
             except Exception as exc:
                 emit({"kind": "warning", "code": error_status(exc), "interfaceId": interface_id})
         if not sockets:
@@ -262,7 +312,7 @@ def scan(interface_ids, emit, duration=10.0, clock=time.monotonic, sleep=time.sl
         # 所有接口已打开并设置过滤器，再发送请求；非阻塞轮询保证无报文时也能超时。
         while clock() - started < duration and sockets:
             elapsed = clock() - started
-            for slot in (0, 2, 4):
+            for slot in SEND_SLOTS:
                 if elapsed >= slot and slot not in sent:
                     sent.add(slot)
                     for iid, (sock, iface) in list(sockets.items()):
@@ -270,6 +320,8 @@ def scan(interface_ids, emit, duration=10.0, clock=time.monotonic, sleep=time.sl
                             sent_count = sock.send(Ether(src=iface["mac"], dst="ff:ff:ff:ff:ff:ff", type=REQUEST_TYPE) / Raw(load=request_payload(request_id)))
                             if sent_count is not None and sent_count < 0:
                                 raise OSError("Npcap send failed")
+                            statistics[iid]["sent"] += 1
+                            diagnostic("sent", interfaceId=iid, elapsed=round(elapsed, 3), sourceMac=iface["mac"], requestId=request_id)
                         except Exception as exc:
                             emit({"kind": "warning", "code": error_status(exc), "interfaceId": iid})
                             sock.close()
@@ -280,12 +332,18 @@ def scan(interface_ids, emit, duration=10.0, clock=time.monotonic, sleep=time.sl
                         packet = receive_packet(sock, Ether)
                         if packet is None:
                             break
+                        statistics[iid]["received"] += 1
                         if not packet.haslayer(Ether) or packet[Ether].type != RESPONSE_TYPE:
                             continue
-                        for row in parse_response(bytes(packet[Ether].payload), request_id):
+                        for row in parse_response(bytes(packet[Ether].payload), request_id, statistics[iid]):
                             updated = results.add(row, iid)
                             if updated:
+                                statistics[iid]["accepted"] += 1
+                                diagnostic("accepted", interfaceId=iid, elapsed=round(clock() - started, 3), macStatus=row["macStatus"])
                                 emit({"kind": "device", "device": updated})
+                        # 首次拒绝/后续每 100 帧汇总，停止前也有诊断，避免坏包刷屏。
+                        if statistics[iid]["received"] == 1 or statistics[iid]["received"] % 100 == 0:
+                            diagnostic("receive_summary", interfaceId=iid, counters=dict(statistics[iid]))
                 except Exception as exc:
                     code = "result_limit" if str(exc) == "result_limit" else error_status(exc)
                     emit({"kind": "warning", "code": code, "interfaceId": iid})
@@ -299,5 +357,7 @@ def scan(interface_ids, emit, duration=10.0, clock=time.monotonic, sleep=time.sl
     except Exception as exc:
         emit({"kind": "error", "code": error_status(exc)})
     finally:
+        for iid, counters in statistics.items():
+            diagnostic("summary", interfaceId=iid, counters=dict(counters))
         for sock, _ in sockets.values():
             sock.close()
